@@ -8,52 +8,58 @@ from corruption import shatter_dict
 from testutil import generate_audio_id, match_status
 
 
-@pytest.mark.usefixtures("client")
+# For testing cases where any data the server expects is corrupt and/or incomplete.
+
+
+@pytest.mark.usefixtures("client", "mongodb")
 class TestUnprocAudio:
-    @pytest.fixture
+    @pytest.fixture(scope="session")
     def route(self):
         return "/audio/unprocessed/"
 
     @pytest.fixture
-    def unrec_questions(self, quizzr_server):
+    def unrec_questions(self, mongodb):
         question_docs = [
             {},
             {"transcript": "Foo"}
         ]
-        results = quizzr_server.insert_unrec_questions(question_docs)
+        results = mongodb.UnrecordedQuestions.insert_many(question_docs)
         yield results.inserted_ids
-        quizzr_server.delete_unrec_questions({"_id": {"$in": results.inserted_ids}})
+        mongodb.UnrecordedQuestions.delete_many({"_id": {"$in": results.inserted_ids}})
 
     @pytest.fixture
-    def audio_doc_no_qid(self, quizzr_server):
-        result = quizzr_server.unproc_audio.insert_one({"_id": generate_audio_id()})
+    def audio_doc_no_qid(self, mongodb):
+        result = mongodb.UnprocessedAudio.insert_one({"_id": generate_audio_id()})
         yield result.inserted_id
-        quizzr_server.unproc_audio.delete_one({"_id": result.inserted_id})
+        mongodb.UnprocessedAudio.delete_one({"_id": result.inserted_id})
 
     @pytest.fixture
-    def audio_doc_invalid_qid(self, quizzr_server):
-        result = quizzr_server.unproc_audio.insert_one({"_id": generate_audio_id(), "questionId": bson.ObjectId()})
+    def audio_doc_invalid_qid(self, mongodb):
+        result = mongodb.UnprocessedAudio.insert_one({"_id": generate_audio_id(), "questionId": bson.ObjectId()})
         yield result.inserted_id
-        quizzr_server.unproc_audio.delete_one({"_id": result.inserted_id})
+        mongodb.UnprocessedAudio.delete_one({"_id": result.inserted_id})
 
     @pytest.fixture
-    def audio_docs(self, quizzr_server, unrec_questions):
+    def audio_docs(self, mongodb, unrec_questions):
         entries = []
         for qid in unrec_questions:
             entries.append({"_id": generate_audio_id(), "questionId": qid})
-        audio_results = quizzr_server.unproc_audio.insert_many(entries)
+        audio_results = mongodb.UnprocessedAudio.insert_many(entries)
         yield
-        quizzr_server.unproc_audio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
+        mongodb.UnprocessedAudio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
 
+    # Test Case: No documents in the UnprocessedAudio collection
     def test_empty(self, client, route):
         test_values = {
             "status": HTTPStatus.NOT_FOUND,
             "resp": b'empty_unproc_audio'
         }
-        result = client.get(route)
-        assert match_status(test_values["status"], result.status)
-        assert result.get_data() == test_values["resp"]
+        response = client.get(route)
+        assert match_status(test_values["status"], response.status)
+        assert response.get_data() == test_values["resp"]
 
+    # The test cases below are for specifically when there is only one audio document with the specified condition.
+    # Test Case: Audio document does not contain question ID
     def test_no_qid(self, client, route, audio_doc_no_qid):
         test_values = {
             "status": HTTPStatus.NOT_FOUND,
@@ -63,6 +69,7 @@ class TestUnprocAudio:
         assert match_status(test_values["status"], response.status)
         assert response.get_data() == test_values["resp"]
 
+    # Test Case: Audio document contains invalid question ID
     def test_invalid_qid(self, client, route, audio_doc_invalid_qid):
         test_values = {
             "status": HTTPStatus.OK
@@ -70,6 +77,12 @@ class TestUnprocAudio:
         response = client.get(route)
         assert match_status(test_values["status"], response.status)
 
+    # Test Case: Multiple audio documents with data corrupted in the following ways:
+    #   1. No question ID
+    #   2. Invalid question ID
+    #   3. Valid question ID with:
+    #     i. No transcript
+    #     ii. A transcript
     def test_corrupt(self, client, route, audio_docs, audio_doc_no_qid, audio_doc_invalid_qid, unrec_questions):
         test_values = {
             "status": HTTPStatus.OK,
@@ -84,23 +97,23 @@ class TestUnprocAudio:
             assert error in response_body["errors"]
 
 
-@pytest.mark.usefixtures("client", "quizzr_server")
+@pytest.mark.usefixtures("client", "mongodb")
 class TestProcAudio:
-    @pytest.fixture
+    @pytest.fixture(scope="session")
     def route(self):
         return "/audio/processed"
 
     @pytest.fixture
-    def unrec_question(self, quizzr_server):
+    def unrec_question(self, mongodb):
         question_doc = {"transcript": "Foo"}
-        result = quizzr_server.insert_unrec_question(question_doc)
+        result = mongodb.UnrecordedQuestions.insert_one(question_doc)
         question_doc["_id"] = result.inserted_id
         yield question_doc
-        quizzr_server.delete_unrec_question({"_id": result.inserted_id})
-        quizzr_server.delete_rec_question({"_id": result.inserted_id})
+        mongodb.UnrecordedQuestions.delete_one({"_id": result.inserted_id})
+        mongodb.RecordedQuestions.delete_one({"_id": result.inserted_id})
 
     @pytest.fixture
-    def unproc_audio_documents(self, quizzr_server, unrec_question):
+    def unproc_audio_documents(self, mongodb, unrec_question):
         audio_docs = [
             {},
             {"questionId": bson.ObjectId()},
@@ -111,20 +124,28 @@ class TestProcAudio:
         for doc in audio_docs:
             doc["_id"] = generate_audio_id()
 
-        audio_results = quizzr_server.unproc_audio.insert_many(audio_docs)
+        audio_results = mongodb.UnprocessedAudio.insert_many(audio_docs)
         yield audio_results.inserted_ids
-        quizzr_server.unproc_audio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
+        mongodb.UnprocessedAudio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
 
     @pytest.fixture
-    def update_batch(self, unproc_audio_documents, quizzr_server):
+    def update_batch(self, mongodb, unproc_audio_documents):
         batch = [{}, {"_id": generate_audio_id()}]
         id_list = []
         for doc_id in unproc_audio_documents:
             batch.append({"_id": doc_id, "vtt": "Placeholder"})
             id_list.append(doc_id)
         yield batch
-        quizzr_server.audio.delete_many({"_id": {"$in": id_list}})
+        mongodb.Audio.delete_many({"_id": {"$in": id_list}})
 
+    # Test Case: Sending a batch of update arguments, each with a different issue:
+    #   1. No audio ID
+    #   2. An invalid audio ID
+    #   3. A valid ID of an audio document with one of the following issues:
+    #     i. No question ID
+    #     ii. An invalid question ID
+    #     iii. No user ID
+    #     iv. An invalid user ID
     def test_corrupt(self, client, route, update_batch):
         test_values = {
             "errors": [
@@ -142,52 +163,54 @@ class TestProcAudio:
             assert error in response_body["errors"]
 
 
-@pytest.mark.usefixtures("client", "quizzr_server")
+@pytest.mark.usefixtures("client", "mongodb")
 class TestAnswer:
-    @pytest.fixture
+    @pytest.fixture(scope="session")
     def route(self):
         return "/answer/"
 
     @pytest.fixture
-    def all_corrupt(self, quizzr_server):
-        backup_qids = quizzr_server.rec_question_ids.copy()
-        quizzr_server.rec_question_ids.append(bson.ObjectId())  # Invalid qid
+    def all_corrupt(self, mongodb, qs_metadata):
+        def attach_ids(documents, id_gen_func, *args, **kwargs):
+            for document in documents:
+                document_c = document.copy()
+                document_c["_id"] = id_gen_func(*args, **kwargs)
+                yield document_c
+
         base_audio_doc = {
-            "vtt": "The quick brown fox jumps over the lazy dog."
+            "vtt": "The quick brown fox jumps over the lazy dog.",
+            "gentleVtt": "This is a dummy VTT.",
+            "version": qs_metadata["version"],
+            "score": {"wer": 1.0, "mer": 1.0, "wil": 1.0}
         }
-        audio_docs = [doc for doc in shatter_dict(base_audio_doc, depth=-1)]
-        for doc in audio_docs:
-            doc["_id"] = generate_audio_id()
-            doc["version"] = quizzr_server.meta["version"],
-            doc["score"] = {"wer": 1.0, "mer": 1.0, "wil": 1.0}
-        audio_results = quizzr_server.audio.insert_many(audio_docs)
+
+        audio_docs = shatter_dict(base_audio_doc, depth=-1, affected_keys=["vtt", "gentleVtt"])
+        audio_results = mongodb.Audio.insert_many(attach_ids(audio_docs, generate_audio_id))
         questions = [
             {}, {"recordings": []}, {"recordings": [generate_audio_id()]}, {"recordings": audio_results.inserted_ids}
         ]
-        question_results = quizzr_server.insert_rec_questions(questions)
-        # quizzr_server.rec_question_ids += question_results.inserted_ids
+        question_results = mongodb.RecordedQuestions.insert_many(questions)
         yield
-        quizzr_server.audio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
-        quizzr_server.rec_questions.delete_many({"_id": {"$in": question_results.inserted_ids}})
-        quizzr_server.rec_question_ids = backup_qids
+        mongodb.Audio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
+        mongodb.RecordedQuestions.delete_many({"_id": {"$in": question_results.inserted_ids}})
 
-    @pytest.fixture
-    def empty(self, quizzr_server):
-        backup_qids = quizzr_server.rec_question_ids
-        quizzr_server.rec_question_ids = []
-        yield
-        quizzr_server.rec_question_ids = backup_qids
-
+    # Test Cases:
+    #   The question has an undefined "recordings" field
+    #   The question has an empty "recordings" field
+    #   The question has an invalid audio ID
+    #   The question has multiple valid IDs of audio documents with missing data:
+    #     i. No VTT from the Kaldi pipeline.
+    #     ii. No VTT from the pre-screening.
     def test_all_corrupt(self, client, all_corrupt, caplog, route):
         test_values = {
             "logs": [
                 " is invalid or associated question has no valid audio recordings",
                 "No audio documents found",
                 "Failed to find a viable audio document",
-                "Audio document does not have VTT"
+                "Audio document is missing at least one required field: "
             ],
             "resp": b'rec_corrupt_questions',
-            "status": HTTPStatus.INTERNAL_SERVER_ERROR
+            "status": HTTPStatus.NOT_FOUND
         }
         caplog.set_level(logging.DEBUG)
         response = client.get(route)
@@ -196,64 +219,50 @@ class TestAnswer:
         for log in test_values["logs"]:
             assert log in caplog.text
 
-    def test_empty(self, client, empty, route):
+    # Test Case: There are no recorded questions.
+    def test_empty(self, client, route):
         test_values = {
             "resp": b'rec_empty_qids',
-            "status": HTTPStatus.INTERNAL_SERVER_ERROR
+            "status": HTTPStatus.NOT_FOUND
         }
         response = client.get(route)
         assert match_status(test_values["status"], response.status)
         assert response.get_data() == test_values["resp"]
 
 
-@pytest.mark.usefixtures("client", "quizzr_server")
+@pytest.mark.usefixtures("client", "mongodb")
 class TestRecord:
-    @pytest.fixture
+    @pytest.fixture(scope="session")
     def route(self):
         return "/record/"
 
     @pytest.fixture
-    def all_corrupt(self, quizzr_server):
-        backup_qids = quizzr_server.unrec_question_ids.copy()
-        quizzr_server.unrec_question_ids.append(bson.ObjectId())
-        question_result = quizzr_server.insert_unrec_question({})
+    def all_corrupt(self, mongodb):
+        question_result = mongodb.UnrecordedQuestions.insert_one({})
         yield
-        quizzr_server.unrec_questions.delete_one({"_id": question_result.inserted_id})
-        quizzr_server.unrec_question_ids = backup_qids
+        mongodb.UnrecordedQuestions.delete_one({"_id": question_result.inserted_id})
 
-    @pytest.fixture
-    def empty(self, quizzr_server):
-        backup_qids = quizzr_server.unrec_question_ids
-        quizzr_server.unrec_question_ids = []
-        yield
-        quizzr_server.unrec_question_ids = backup_qids
-
+    # Test Case: The question does not have a transcript.
     def test_all_corrupt(self, client, route, all_corrupt, caplog):
         test_values = {
             "logs": [
                 " is invalid or associated question has no transcript"
             ],
-            "resp": b'unrec_corrupt_questions'
-        }
-        response = client.get(route)
-        assert response.get_data() == test_values["resp"]
-        for log in test_values["logs"]:
-            assert log in caplog.text
-
-    def test_empty(self, client, route, empty):
-        test_values = {
-            "resp": b'unrec_empty_qids',
-            "status": HTTPStatus.INTERNAL_SERVER_ERROR
+            "resp": b'unrec_corrupt_questions',
+            "status": HTTPStatus.NOT_FOUND
         }
         response = client.get(route)
         assert match_status(test_values["status"], response.status)
         assert response.get_data() == test_values["resp"]
+        for log in test_values["logs"]:
+            assert log in caplog.text
 
-
-def test_err_upload_args(client):
-    audio = open("input/test.wav")
-
-    client.post("/upload", data={
-        "audio": (audio, ),
-        "qid": "60e221e891e99d1d0ad61d65"
-    })
+    # Test Case: There are no unrecorded questions.
+    def test_empty(self, client, route):
+        test_values = {
+            "resp": b'unrec_empty_qids',
+            "status": HTTPStatus.NOT_FOUND
+        }
+        response = client.get(route)
+        assert match_status(test_values["status"], response.status)
+        assert response.get_data() == test_values["resp"]

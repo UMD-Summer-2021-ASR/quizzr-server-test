@@ -1,15 +1,21 @@
+import json
 import os
 
 import pymongo
 import pytest
 
-import server
+import gdrive_authentication
 from server import create_app
 
 
 @pytest.fixture(scope="session")
-def client():
-    app = create_app()
+def db_name():
+    return "QuizzrDatabaseTest"
+
+
+@pytest.fixture(scope="session")
+def client(db_name):
+    app = create_app(db_name)
     with app.test_client() as client:
         return client
 
@@ -20,16 +26,26 @@ def mongodb_client():
     return pymongo.MongoClient(connection_string)
 
 
-@pytest.fixture
-def quizzr_server():
-    return server.qs
-
-
-# def mongodb(mongodb_client):
 @pytest.fixture(scope="session")
-def mongodb(mongodb_client, quizzr_server):
-    # database = mongodb_client.QuizzrDatabaseTest
-    database = quizzr_server.database
+def qs_dir():
+    return os.environ["SERVER_DIR"]
+
+
+@pytest.fixture(scope="session")
+def qs_metadata(qs_dir):
+    with open(os.path.join(qs_dir, "metadata.json"), "r") as meta_f:
+        return json.load(meta_f)
+
+
+@pytest.fixture(scope="session")
+def google_drive(qs_dir):
+    gdrive = gdrive_authentication.GDriveAuth(os.path.join(qs_dir, "privatedata"))
+    return gdrive
+
+
+@pytest.fixture(scope="session")
+def mongodb(mongodb_client, db_name):
+    database = mongodb_client.get_database(db_name)
     yield database
     query = {"_id": {"$exists": True}}
     database.Audio.delete_many(query)
