@@ -12,10 +12,8 @@ from testutil import generate_audio_id, match_status
 
 
 @pytest.mark.usefixtures("client", "mongodb")
-class TestUnprocAudio:
-    @pytest.fixture(scope="session")
-    def route(self):
-        return "/audio/unprocessed/"
+class TestGetUnprocAudio:
+    ROUTE = "/audio/unprocessed/"
 
     @pytest.fixture
     def unrec_questions(self, mongodb):
@@ -49,32 +47,32 @@ class TestUnprocAudio:
         mongodb.UnprocessedAudio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
 
     # Test Case: No documents in the UnprocessedAudio collection
-    def test_empty(self, client, route):
+    def test_empty(self, client):
         test_values = {
             "status": HTTPStatus.NOT_FOUND,
             "resp": b'empty_unproc_audio'
         }
-        response = client.get(route)
+        response = client.get(self.ROUTE)
         assert match_status(test_values["status"], response.status)
         assert response.get_data() == test_values["resp"]
 
     # The test cases below are for specifically when there is only one audio document with the specified condition.
     # Test Case: Audio document does not contain question ID
-    def test_no_qid(self, client, route, audio_doc_no_qid):
+    def test_no_qid(self, client, audio_doc_no_qid):
         test_values = {
             "status": HTTPStatus.NOT_FOUND,
             "resp": b'empty_qid2entries'
         }
-        response = client.get(route)
+        response = client.get(self.ROUTE)
         assert match_status(test_values["status"], response.status)
         assert response.get_data() == test_values["resp"]
 
     # Test Case: Audio document contains invalid question ID
-    def test_invalid_qid(self, client, route, audio_doc_invalid_qid):
+    def test_invalid_qid(self, client, audio_doc_invalid_qid):
         test_values = {
             "status": HTTPStatus.OK
         }
-        response = client.get(route)
+        response = client.get(self.ROUTE)
         assert match_status(test_values["status"], response.status)
 
     # Test Case: Multiple audio documents with data corrupted in the following ways:
@@ -83,14 +81,14 @@ class TestUnprocAudio:
     #   3. Valid question ID with:
     #     i. No transcript
     #     ii. A transcript
-    def test_corrupt(self, client, route, audio_docs, audio_doc_no_qid, audio_doc_invalid_qid, unrec_questions):
+    def test_corrupt(self, client, audio_docs, audio_doc_no_qid, audio_doc_invalid_qid, unrec_questions):
         test_values = {
             "status": HTTPStatus.OK,
             "errors": [
                 {"type": "internal_error", "reason": "undefined_question_id"}
             ]
         }
-        response = client.get(route)
+        response = client.get(self.ROUTE)
         response_body = response.get_json()
         assert match_status(test_values["status"], response.status)
         for error in test_values["errors"]:
@@ -98,10 +96,8 @@ class TestUnprocAudio:
 
 
 @pytest.mark.usefixtures("client", "mongodb")
-class TestProcAudio:
-    @pytest.fixture(scope="session")
-    def route(self):
-        return "/audio/processed"
+class TestProcessAudio:
+    ROUTE = "/audio/processed"
 
     @pytest.fixture
     def unrec_question(self, mongodb):
@@ -146,7 +142,7 @@ class TestProcAudio:
     #     ii. An invalid question ID
     #     iii. No user ID
     #     iv. An invalid user ID
-    def test_corrupt(self, client, route, update_batch):
+    def test_corrupt(self, client, update_batch):
         test_values = {
             "errors": [
                 {"type": "bad_args", "reason": "undefined_gfile_id"},
@@ -157,17 +153,15 @@ class TestProcAudio:
                 {"type": "internal_error", "reason": "user_update_failure"}
             ]
         }
-        response = client.post(route, json={"arguments": update_batch})
+        response = client.post(self.ROUTE, json={"arguments": update_batch})
         response_body = response.get_json()
         for error in test_values["errors"]:
             assert error in response_body["errors"]
 
 
 @pytest.mark.usefixtures("client", "mongodb")
-class TestAnswer:
-    @pytest.fixture(scope="session")
-    def route(self):
-        return "/answer/"
+class TestGetRec:
+    ROUTE = "/answer/"
 
     @pytest.fixture
     def all_corrupt(self, mongodb, qs_metadata):
@@ -201,7 +195,7 @@ class TestAnswer:
     #   The question has multiple valid IDs of audio documents with missing data:
     #     i. No VTT from the Kaldi pipeline.
     #     ii. No VTT from the pre-screening.
-    def test_all_corrupt(self, client, all_corrupt, caplog, route):
+    def test_all_corrupt(self, client, all_corrupt, caplog):
         test_values = {
             "logs": [
                 " is invalid or associated question has no valid audio recordings",
@@ -213,28 +207,26 @@ class TestAnswer:
             "status": HTTPStatus.NOT_FOUND
         }
         caplog.set_level(logging.DEBUG)
-        response = client.get(route)
+        response = client.get(self.ROUTE)
         assert match_status(test_values["status"], response.status)
         assert response.get_data() == test_values["resp"]
         for log in test_values["logs"]:
             assert log in caplog.text
 
-    # Test Case: There are no recorded questions.
-    def test_empty(self, client, route):
+    # Test Case: There are no recorded questions
+    def test_empty(self, client):
         test_values = {
             "resp": b'rec_empty_qids',
             "status": HTTPStatus.NOT_FOUND
         }
-        response = client.get(route)
+        response = client.get(self.ROUTE)
         assert match_status(test_values["status"], response.status)
         assert response.get_data() == test_values["resp"]
 
 
 @pytest.mark.usefixtures("client", "mongodb")
-class TestRecord:
-    @pytest.fixture(scope="session")
-    def route(self):
-        return "/record/"
+class TestGetTranscript:
+    ROUTE = "/record/"
 
     @pytest.fixture
     def all_corrupt(self, mongodb):
@@ -242,8 +234,8 @@ class TestRecord:
         yield
         mongodb.UnrecordedQuestions.delete_one({"_id": question_result.inserted_id})
 
-    # Test Case: The question does not have a transcript.
-    def test_all_corrupt(self, client, route, all_corrupt, caplog):
+    # Test Case: The question does not have a transcript
+    def test_all_corrupt(self, client, all_corrupt, caplog):
         test_values = {
             "logs": [
                 " is invalid or associated question has no transcript"
@@ -251,18 +243,18 @@ class TestRecord:
             "resp": b'unrec_corrupt_questions',
             "status": HTTPStatus.NOT_FOUND
         }
-        response = client.get(route)
+        response = client.get(self.ROUTE)
         assert match_status(test_values["status"], response.status)
         assert response.get_data() == test_values["resp"]
         for log in test_values["logs"]:
             assert log in caplog.text
 
-    # Test Case: There are no unrecorded questions.
-    def test_empty(self, client, route):
+    # Test Case: There are no unrecorded questions
+    def test_empty(self, client):
         test_values = {
             "resp": b'unrec_empty_qids',
             "status": HTTPStatus.NOT_FOUND
         }
-        response = client.get(route)
+        response = client.get(self.ROUTE)
         assert match_status(test_values["status"], response.status)
         assert response.get_data() == test_values["resp"]

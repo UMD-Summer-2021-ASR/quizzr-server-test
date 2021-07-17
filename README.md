@@ -2,18 +2,33 @@
 This repository includes Python modules for running automated tests on the [Quizzr.io Back-end Core](https://github.com/UMD-Summer-2021-ASR/quizzr-server) repository. To install it, clone the repository and install the requirements given in the `requirements.txt` file. Prior to running one of these automated test files, be sure to include the directory of the server in the `PYTHONPATH` environment variable.
 
 ## Tests
-There are two testing modules for the server: `test_pipeline.py` and `test_error_pipeline.py`. Test cases in both modules are grouped by the endpoint they are testing. Refer to the in-code documentation for more details on the test cases.
+There are two testing modules for the server: `test_pipeline.py` and `test_error_pipeline.py`. Test cases in both modules are grouped by the action they are testing. The individual test cases are variations of the action they are testing. Refer to the in-code documentation for more details on the test cases.
 
 ### `test_pipeline.py`
-This testing module tests the functionality of the server's endpoints in normal scenarios. Currently, it only tests the following endpoints:
-* `GET` `/answer/`
-* `GET` `/audio/unprocessed/`
-* `POST` `/upload`
+This testing module tests the functionality of the server's endpoints in normal scenarios. Currently, it only implements the following test classes:
+* `TestCheckAnswer`
+* `TestGetFile`
+* `TestGetRec`
+* `TestGetTranscript`
+* `TestGetUnprocAudio`
+* `TestUploadRec`
 
 
 ### `test_error_pipeline.py`
-This testing module tests whether the server handles corrupted data as expected. Currently, it only tests the following endpoints:
-* `GET` `/answer/`
-* `POST` `/audio/processed`
-* `GET` `/record/`
-* `GET` `/audio/unprocessed/`
+This testing module tests whether the server handles corrupted data as expected. Currently, it only implements the following test classes:
+* `TestGetRec`
+* `TestGetTranscript`
+* `TestGetUnprocAudio`
+* `TestProcessAudio`
+
+### Test Class Definitions
+The name of each class in a testing module defines the action that the associated group is testing. The following is the list of actions that the class names signify:
+
+| Class Name           | Description                                                    |
+| -------------------- | -------------------------------------------------------------- |
+| `TestCheckAnswer`    | Check if an answer to a question is correct.                   |
+| `TestGetFile`        | Get a file from Google Drive.                                  |
+| `TestGetRec`         | Get a recording for answering a question.                      |
+| `TestGetTranscript`  | Get a transcript for recording.                                |
+| `TestGetUnprocAudio` | Get a batch of unprocessed audio documents.                    |
+| `TestProcessAudio`   | Update a batch of audio documents with processing information. |
