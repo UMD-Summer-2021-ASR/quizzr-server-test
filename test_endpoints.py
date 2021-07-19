@@ -1,5 +1,6 @@
 import os
 import random
+from datetime import datetime
 from http import HTTPStatus
 
 import bson
@@ -413,7 +414,6 @@ class TestGetUnprocAudio:
 
 
 @pytest.mark.usefixtures("client", "mongodb")
-@pytest.mark.skip(reason="not finished yet")
 class TestProcessAudio:
     ROUTE = "/audio/processed"
 
@@ -435,54 +435,51 @@ class TestProcessAudio:
         mongodb.Users.delete_one({"_id": result.inserted_id})
 
     @pytest.fixture
-    def unproc_audio_documents(self, mongodb, unrec_question, user):
+    def unproc_audio_document(self, mongodb, unrec_question, user, flask_app):
         audio_doc = {
             "_id": generate_audio_id(),
             "questionId": unrec_question["_id"],
             "userId": user["_id"],
-            "gentleVtt": "Foo"
+            "gentleVtt": "Foo",
+            "recType": "normal",
+            "version": flask_app.config["VERSION"]
         }
 
         audio_result = mongodb.UnprocessedAudio.insert_one(audio_doc)
         yield audio_result.inserted_id
         mongodb.UnprocessedAudio.delete_one({"_id": audio_result.inserted_id})
-        mongodb.Audio.delete_one({"_id": audio_result.inserted_id})
 
     @pytest.fixture
-    def update_batch(self, mongodb, unproc_audio_document):
+    def update_batch(self, mongodb, unrec_question, unproc_audio_document):
         batch = [
             {
                 "_id": unproc_audio_document,
                 "vtt": "Bar",
-                "score": {"wer": 1.0, "mer": 1.0, "wil": 1.0}
+                "score": {"wer": 1.0, "mer": 1.0, "wil": 1.0},
+                "transcript": unrec_question["transcript"],
+                "batchNumber": str(datetime.now()),
+                "metadata": "detect_num_speakers=False, max_num_speakers=1"
             }
         ]
         yield batch
-        mongodb.Audio.delete_many({"_id": unproc_audio_document})
+        mongodb.Audio.delete_one({"_id": unproc_audio_document})
 
-    # Test Case: Sending a batch of update arguments, each with a different issue:
-    #   1. No audio ID
-    #   2. An invalid audio ID
-    #   3. A valid ID of an audio document with one of the following issues:
-    #     i. No question ID
-    #     ii. An invalid question ID
-    #     iii. No user ID
-    #     iv. An invalid user ID
-    def test_corrupt(self, client, update_batch):
-        test_values = {
-            "errors": [
-                {"type": "bad_args", "reason": "undefined_gfile_id"},
-                {"type": "bad_args", "reason": "invalid_gfile_id"},
-                {"type": "internal_error", "reason": "undefined_question_id"},
-                {"type": "internal_error", "reason": "question_update_failure"},
-                {"type": "internal_error", "reason": "undefined_user_id"},
-                {"type": "internal_error", "reason": "user_update_failure"}
-            ]
-        }
+    # Test Case: Send a single update document with the required fields.
+    def test_single(self, client, mongodb, update_batch, unproc_audio_document, unrec_question, user):
+        doc_required_fields = ["_id", "version", "questionId", "userId", "transcript", "vtt", "score", "batchNumber",
+                               "metadata", "gentleVtt", "recType"]
         response = client.post(self.ROUTE, json={"arguments": update_batch})
         response_body = response.get_json()
-        for error in test_values["errors"]:
-            assert error in response_body["errors"]
+        assert response_body["total"] == len(update_batch)
+        assert response_body["successes"] == response_body["total"]
+
+        audio_doc = mongodb.Audio.find_one({"_id": unproc_audio_document})
+        for field in doc_required_fields:
+            assert field in audio_doc
+        question_doc = mongodb.RecordedQuestions.find_one({"_id": unrec_question["_id"]})
+        recording = question_doc["recordings"][0]
+        assert recording["id"] == unproc_audio_document
+        assert recording["recType"] == "normal"
 
 
 @pytest.mark.usefixtures("client", "mongodb", "google_drive", "input_dir")

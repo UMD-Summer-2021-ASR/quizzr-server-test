@@ -11,6 +11,7 @@ This testing module tests the functionality of the server's endpoints in normal 
 * `TestGetRec`
 * `TestGetTranscript`
 * `TestGetUnprocAudio`
+* `TestProcessAudio`
 * `TestUploadRec`
 
 
@@ -32,3 +33,4 @@ The name of each class in a testing module defines the action that the associate
 | `TestGetTranscript`  | Get a transcript for recording.                                |
 | `TestGetUnprocAudio` | Get a batch of unprocessed audio documents.                    |
 | `TestProcessAudio`   | Update a batch of audio documents with processing information. |
+| `TestUploadRec`      | Submit a recording for pre-screening.                          |
