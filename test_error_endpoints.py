@@ -159,12 +159,12 @@ class TestProcessAudio:
             assert error in response_body["errors"]
 
 
-@pytest.mark.usefixtures("client", "mongodb")
+@pytest.mark.usefixtures("client", "mongodb", "flask_app")
 class TestGetRec:
     ROUTE = "/answer/"
 
     @pytest.fixture
-    def all_corrupt(self, mongodb, qs_metadata):
+    def all_corrupt(self, mongodb, flask_app):
         def attach_ids(documents, id_gen_func, *args, **kwargs):
             for document in documents:
                 document_c = document.copy()
@@ -174,7 +174,7 @@ class TestGetRec:
         base_audio_doc = {
             "vtt": "The quick brown fox jumps over the lazy dog.",
             "gentleVtt": "This is a dummy VTT.",
-            "version": qs_metadata["version"],
+            "version": flask_app.config["VERSION"],
             "score": {"wer": 1.0, "mer": 1.0, "wil": 1.0}
         }
 

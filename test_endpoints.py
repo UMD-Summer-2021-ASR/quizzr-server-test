@@ -57,12 +57,12 @@ class TestGetFile:
         assert match_status(HTTPStatus.OK, response.status)
 
 
-@pytest.mark.usefixtures("mongodb", "client", "qs_metadata")
+@pytest.mark.usefixtures("mongodb", "client", "flask_app")
 class TestGetRec:
     ROUTE = "/answer/"
 
     @pytest.fixture
-    def doc_setup(self, mongodb, qs_metadata):
+    def doc_setup(self, mongodb, flask_app):
         num_docs = 5
         audio_docs = []
         for i in range(1, num_docs + 1):
@@ -70,7 +70,7 @@ class TestGetRec:
                 "_id": generate_audio_id(),
                 "vtt": "The quick brown fox jumps over the lazy dog.",
                 "gentleVtt": "This is a dummy VTT.",
-                "version": qs_metadata["version"],
+                "version": flask_app.config["VERSION"],
                 "score": {
                     "wer": i,
                     "mer": i,
@@ -80,7 +80,9 @@ class TestGetRec:
         test_audio_doc = audio_docs[0]
         random.shuffle(audio_docs)
         audio_results = mongodb.Audio.insert_many(audio_docs)
-        question_result = mongodb.RecordedQuestions.insert_one({"recordings": audio_results.inserted_ids})
+        question_result = mongodb.RecordedQuestions.insert_one({
+            "recordings": [{"id": rec_id, "recType": "normal"} for rec_id in audio_results.inserted_ids]
+        })
         yield test_audio_doc
         mongodb.Audio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
         mongodb.RecordedQuestions.delete_one({"_id": question_result.inserted_id})
@@ -486,6 +488,7 @@ class TestProcessAudio:
 @pytest.mark.usefixtures("client", "mongodb", "google_drive", "input_dir")
 class TestUploadRec:
     ROUTE = "/upload"
+    CONTENT_TYPE = "multipart/form-data"
 
     @pytest.fixture
     def unrec_qid(self, input_dir, mongodb):
@@ -498,24 +501,32 @@ class TestUploadRec:
         mongodb.UnrecordedQuestions.delete_one({"_id": question_result.inserted_id})
 
     @pytest.fixture
+    def user_id(self, mongodb):
+        user_result = mongodb.Users.insert_one({"recordedAudios": []})
+        yield user_result.inserted_id
+        mongodb.Users.delete_one({"_id": user_result.inserted_id})
+
+    @pytest.fixture
     def upload_cleanup(self, mongodb, google_drive):
         yield
         audio_cursor = mongodb.UnprocessedAudio.find(None, {"_id": 1})
         for audio_doc in audio_cursor:
             fid = audio_doc["_id"]
-            google_drive.drive.files().delete(fileId=fid).execute()
+            google_drive.service.files().delete(fileId=fid).execute()
         mongodb.UnprocessedAudio.delete_many({"_id": {"$exists": True}})
+        audio_cursor = mongodb.Audio.find(None, {"_id": 1})
+        for audio_doc in audio_cursor:
+            fid = audio_doc["_id"]
+            google_drive.service.files().delete(fileId=fid).execute()
+        mongodb.Audio.delete_many({"_id": {"$exists": True}})
 
     @pytest.fixture
     def exact_data(self, mongodb, input_dir, unrec_qid):
-        # TODO: Cleanup UnprocessedAudio collection (separate fixture) and Google Drive
         audio_path = os.path.join(input_dir, "exact.wav")
         assert os.path.exists(audio_path)
-        user_result = mongodb.Users.insert_one({"recordedAudios": []})
         audio = open(audio_path, "rb")
-        yield {"qid": unrec_qid, "audio": audio}
+        yield {"qid": unrec_qid, "audio": audio, "recType": "normal"}
         audio.close()
-        mongodb.Users.delete_one({"_id": user_result.inserted_id})
 
     @pytest.fixture
     def admin_data(self, exact_data):
@@ -523,10 +534,18 @@ class TestUploadRec:
         data["diarMetadata"] = "detect_num_speakers=False, max_num_speakers=3"
         return data
 
+    @pytest.fixture
+    def buzz_data(self, mongodb, input_dir):
+        audio_path = os.path.join(input_dir, "buzz.wav")
+        assert os.path.exists(audio_path)
+        audio = open(audio_path, "rb")
+        yield {"audio": audio, "recType": "buzz"}
+        audio.close()
+
     # Test Case: Submitting a recording with exact accuracy.
-    def test_exact(self, client, mongodb, exact_data, upload_cleanup):
-        doc_required_fields = ["gentleVtt", "questionId", "userId"]
-        response = client.post(self.ROUTE, data=exact_data, content_type='multipart/form-data')
+    def test_exact(self, client, mongodb, exact_data, upload_cleanup, user_id):
+        doc_required_fields = ["gentleVtt", "questionId", "userId", "recType"]
+        response = client.post(self.ROUTE, data=exact_data, content_type=self.CONTENT_TYPE)
         response_body = response.get_json()
         assert match_status(HTTPStatus.ACCEPTED, response.status)
         assert response_body.get("prescreenSuccessful")
@@ -535,12 +554,33 @@ class TestUploadRec:
             assert field in audio_doc
 
     # Test Case: Submitting a recording as an administrator.
-    def test_admin(self, mongodb, client, admin_data, upload_cleanup):
-        doc_required_fields = ["gentleVtt", "questionId", "userId", "diarMetadata"]
-        response = client.post(self.ROUTE, data=admin_data, content_type='multipart/form-data')
+    def test_admin(self, mongodb, client, admin_data, upload_cleanup, user_id):
+        doc_required_fields = ["gentleVtt", "questionId", "userId", "recType", "diarMetadata"]
+        response = client.post(self.ROUTE, data=admin_data, content_type=self.CONTENT_TYPE)
         response_body = response.get_json()
         assert match_status(HTTPStatus.ACCEPTED, response.status)
         assert response_body.get("prescreenSuccessful")
         audio_doc = mongodb.UnprocessedAudio.find_one()
+        assert audio_doc
         for field in doc_required_fields:
             assert field in audio_doc
+        assert audio_doc["recType"] == "normal"
+
+    # Test Case: Submitting a buzz recording.
+    def test_buzz(self, mongodb, client, buzz_data, upload_cleanup, user_id):
+        doc_required_fields = ["userId", "recType"]
+        response = client.post(self.ROUTE, data=buzz_data, content_type=self.CONTENT_TYPE)
+        response_body = response.get_json()
+        assert match_status(HTTPStatus.ACCEPTED, response.status)
+        assert response_body.get("prescreenSuccessful")
+
+        audio_doc = mongodb.Audio.find_one()
+        assert audio_doc
+        for field in doc_required_fields:
+            assert field in audio_doc
+        assert audio_doc["recType"] == "buzz"
+
+        user_doc = mongodb.Users.find_one({"_id": user_id})
+        rec = user_doc["recordedAudios"][0]
+        assert rec["id"] == audio_doc["_id"]
+        assert rec["recType"] == "buzz"

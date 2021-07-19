@@ -7,11 +7,7 @@ from googleapiclient.http import MediaFileUpload
 
 import gdrive_authentication
 from server import create_app
-
-
-@pytest.fixture(scope="session")
-def env_name():
-    return "testing"  # Deprecated
+from tpm import QuizzrTPM
 
 
 @pytest.fixture(scope="session")
@@ -25,12 +21,21 @@ def g_folder_name():
 
 
 @pytest.fixture(scope="session")
+def g_dir_struct_conf():
+    return {
+        "children": {
+            "Buzz": {}
+        }
+    }
+
+
+@pytest.fixture(scope="session")
 def g_folder_parents():
     return None
 
 
 @pytest.fixture(scope="session")
-def cached_ids_path():
+def cached_struct_path():
     return ".id_cache.json"
 
 
@@ -42,18 +47,6 @@ def qs_dir():
 @pytest.fixture(scope="session")
 def input_dir():
     return "input"
-
-
-@pytest.fixture(scope="session")
-def qs_metadata(qs_dir):
-    with open(os.path.join(qs_dir, "metadata.json"), "r") as meta_f:
-        return json.load(meta_f)
-
-
-@pytest.fixture(scope="session")
-def flask_app(env_name, g_folder_id):
-    app = create_app(env_name, {"TESTING": True, "G_FOLDER_ID": g_folder_id, "DIFFICULTY_LIMITS": [3, 6, None]})
-    return app
 
 
 @pytest.fixture(scope="session")
@@ -75,44 +68,35 @@ def google_drive(qs_dir):
 
 
 @pytest.fixture(scope="session")
-def g_folder_id(google_drive, cached_ids_path, g_folder_name, g_folder_parents):
-    # If override not defined, try looking in the cached IDs list
-    folder_id = None
-    cached_ids = {}
-    if os.path.exists(cached_ids_path):
-        with open(cached_ids_path, "r") as cache_f:
-            cached_ids = json.load(cache_f)
-        folder_id = cached_ids.get(g_folder_name)
-
-    # If no results were found from looking in the cached IDs list or there is no cached IDs list, create a new ID
-    if not folder_id:
-        file_metadata = {
-            "name": g_folder_name,
-            "mimeType": "application/vnd.google-apps.folder"
-        }
-        if g_folder_parents:
-            file_metadata["parents"] = g_folder_parents
-        folder = google_drive.drive.files().create(body=file_metadata, fields='id').execute()
-        folder_id = folder.get('id')
-
-    yield folder_id
-
-    # TODO: Make it only write if there is no cached IDs or the list of cached IDs changed
-    cached_ids[g_folder_name] = folder_id
-    with open(cached_ids_path, "w") as cache_f:
-        json.dump(cached_ids, cache_f)
+def g_dir_struct(google_drive, cached_struct_path, g_folder_name, g_folder_parents, g_dir_struct_conf):
+    return QuizzrTPM.init_g_dir_structure(google_drive.service, cached_struct_path, g_folder_name, g_dir_struct_conf)
 
 
 @pytest.fixture(scope="session")
-def g_file_id(google_drive, g_folder_id, input_dir):
+def flask_app(g_dir_struct, g_folder_name, db_name):
+    app = create_app({
+        "Q_ENV": "testing",
+        "DATABASE": db_name,
+        "G_FOLDER": g_folder_name,
+        "G_DIR_STRUCT": g_dir_struct,
+        "DIFFICULTY_LIMITS": [3, 6, None],
+        "TESTING": True
+    })
+    return app
+
+
+@pytest.fixture(scope="session")
+def g_file_id(google_drive, g_dir_struct, input_dir):
+    parent = QuizzrTPM.get_dir_id(g_dir_struct, "/")
     file_name = "test.wav"
-    file_metadata = {"name": file_name, "parents": [g_folder_id]}
+    file_metadata = {"name": file_name, "parents": [parent]}
     file_path = os.path.join(input_dir, file_name)
 
     media = MediaFileUpload(file_path, mimetype="audio/wav")
-    gfile = google_drive.drive.files().create(body=file_metadata, media_body=media, fields="id").execute()
+    gfile = google_drive.service.files().create(body=file_metadata, media_body=media, fields="id").execute()
     gfile_id = gfile.get("id")
-    return gfile_id
+    yield gfile_id
+    google_drive.service.files().delete(fileId=gfile_id).execute()
 
 
 @pytest.fixture(scope="session")
