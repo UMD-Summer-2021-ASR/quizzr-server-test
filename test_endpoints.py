@@ -13,45 +13,57 @@ from testutil import match_status, generate_audio_id
 @pytest.mark.usefixtures("mongodb", "client")
 class TestCheckAnswer:
     ROUTE = "/answer/check"
-
-    @pytest.fixture(scope="session")
-    def correct_answer(self):
-        return "Foo"
-
-    @pytest.fixture(scope="session")
-    def incorrect_answer(self):
-        return "Bar"
+    CORRECT_ANSWER = "Eiffel Tower"
+    CORRECT_ANSWER_INSERTIONS = "The " + CORRECT_ANSWER + " of Paris"
+    CORRECT_ANSWER_TYPOS = "riffle topwer"
+    INCORRECT_ANSWER = "Empire State Building"
 
     @pytest.fixture
-    def question_id(self, mongodb, correct_answer):
-        question_result = mongodb.RecordedQuestions.insert_one({"answer": correct_answer})
+    def question_id(self, mongodb):
+        question_result = mongodb.RecordedQuestions.insert_one({"answer": self.CORRECT_ANSWER})
         yield question_result.inserted_id
         mongodb.RecordedQuestions.delete_one({"_id": question_result.inserted_id})
 
     # Test Case: The user provides a correct answer
-    def test_correct(self, client, question_id, correct_answer):
-        response = client.get(self.ROUTE, query_string={"qid": question_id, "a": correct_answer})
+    def test_correct_exact(self, client, question_id):
+        response = client.get(self.ROUTE, query_string={"qid": question_id, "a": self.CORRECT_ANSWER})
+        assert match_status(HTTPStatus.OK, response.status)
+        response_body = response.get_json()
+        assert "correct" in response_body
+        assert response_body["correct"]
+
+    # Test Case: The user provides a correct answer, along with some extra words
+    def test_correct_extra(self, client, question_id):
+        response = client.get(self.ROUTE, query_string={"qid": question_id, "a": self.CORRECT_ANSWER_INSERTIONS})
+        assert match_status(HTTPStatus.OK, response.status)
+        response_body = response.get_json()
+        assert "correct" in response_body
+        assert response_body["correct"]
+
+    # Test Case: The user provides a correct answer with some typos.
+    def test_correct_typos(self, client, question_id):
+        response = client.get(self.ROUTE, query_string={"qid": question_id, "a": self.CORRECT_ANSWER_TYPOS})
         assert match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
         assert "correct" in response_body
         assert response_body["correct"]
 
     # Test Case: The user provides an incorrect answer
-    def test_incorrect(self, client, question_id, incorrect_answer):
-        response = client.get(self.ROUTE, query_string={"qid": question_id, "a": incorrect_answer})
+    def test_incorrect(self, client, question_id):
+        response = client.get(self.ROUTE, query_string={"qid": question_id, "a": self.INCORRECT_ANSWER})
         assert match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
         assert "correct" in response_body
         assert not response_body["correct"]
 
 
-@pytest.mark.usefixtures("g_file_id")
+@pytest.mark.usefixtures("blob_file")
 class TestGetFile:
-    ROUTE = "/download/"
+    ROUTE = "/download"
 
     @pytest.fixture
-    def full_route(self, g_file_id):
-        return self.ROUTE + g_file_id
+    def full_route(self, blob_file):
+        return "/".join([self.ROUTE, "normal", blob_file])
 
     def test_download(self, client, full_route):
         response = client.get(full_route)
@@ -90,7 +102,7 @@ class TestGetRec:
 
     # Test Case: No difficulty specified
     def test_any(self, client, doc_setup):
-        required_response_fields = ["_id", "vtt", "gentleVtt"]
+        required_response_fields = ["_id", "vtt", "gentleVtt", "qid"]
         response = client.get(self.ROUTE)
         response_body = response.get_json()
         assert match_status(HTTPStatus.OK, response.status)
@@ -482,7 +494,7 @@ class TestProcessAudio:
         assert recording["recType"] == "normal"
 
 
-@pytest.mark.usefixtures("client", "mongodb", "google_drive", "input_dir")
+@pytest.mark.usefixtures("client", "mongodb", "firebase_bucket", "input_dir")
 class TestUploadRec:
     ROUTE = "/upload"
     CONTENT_TYPE = "multipart/form-data"
@@ -504,17 +516,17 @@ class TestUploadRec:
         mongodb.Users.delete_one({"_id": user_result.inserted_id})
 
     @pytest.fixture
-    def upload_cleanup(self, mongodb, google_drive):
+    def upload_cleanup(self, mongodb, firebase_bucket, flask_app):
         yield
         audio_cursor = mongodb.UnprocessedAudio.find(None, {"_id": 1})
         for audio_doc in audio_cursor:
             fid = audio_doc["_id"]
-            google_drive.service.files().delete(fileId=fid).execute()
+            firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], "normal", fid])).delete()
         mongodb.UnprocessedAudio.delete_many({"_id": {"$exists": True}})
         audio_cursor = mongodb.Audio.find(None, {"_id": 1})
         for audio_doc in audio_cursor:
             fid = audio_doc["_id"]
-            google_drive.service.files().delete(fileId=fid).execute()
+            firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], "buzz", fid])).delete()
         mongodb.Audio.delete_many({"_id": {"$exists": True}})
 
     @pytest.fixture

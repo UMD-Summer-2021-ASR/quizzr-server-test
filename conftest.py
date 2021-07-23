@@ -1,12 +1,12 @@
 import os
+import secrets
 
 import pymongo
 import pytest
-from googleapiclient.http import MediaFileUpload
+import yaml
+from firebase_admin import storage
 
-import gdrive_authentication
 from server import create_app
-from tpm import QuizzrTPM
 
 
 @pytest.fixture(scope="session")
@@ -15,27 +15,8 @@ def db_name():
 
 
 @pytest.fixture(scope="session")
-def g_folder_name():
-    return "RecordingsTestAuto"
-
-
-@pytest.fixture(scope="session")
-def g_dir_struct_conf():
-    return {
-        "children": {
-            "Buzz": {}
-        }
-    }
-
-
-@pytest.fixture(scope="session")
-def g_folder_parents():
-    return None
-
-
-@pytest.fixture(scope="session")
-def cached_struct_path():
-    return ".id_cache.json"
+def blob_root_name():
+    return "testing"
 
 
 @pytest.fixture(scope="session")
@@ -46,6 +27,18 @@ def qs_dir():
 @pytest.fixture(scope="session")
 def input_dir():
     return "input"
+
+
+@pytest.fixture(scope="session")
+def api_doc_path(qs_dir):
+    return os.path.join(qs_dir, "api", "backend.yaml")
+
+
+@pytest.fixture(scope="session")
+def server_api_doc(api_doc_path):
+    with open(api_doc_path) as api_f:
+        api = yaml.load(api_f.read(), Loader=yaml.FullLoader)
+    return api
 
 
 @pytest.fixture(scope="session")
@@ -61,23 +54,11 @@ def mongodb_client():
 
 
 @pytest.fixture(scope="session")
-def google_drive(qs_dir):
-    gdrive = gdrive_authentication.GDriveAuth(os.path.join(qs_dir, "privatedata"))
-    return gdrive
-
-
-@pytest.fixture(scope="session")
-def g_dir_struct(google_drive, cached_struct_path, g_folder_name, g_folder_parents, g_dir_struct_conf):
-    return QuizzrTPM.init_g_dir_structure(google_drive.service, cached_struct_path, g_folder_name, g_dir_struct_conf)
-
-
-@pytest.fixture(scope="session")
-def flask_app(g_dir_struct, g_folder_name, db_name):
+def flask_app(blob_root_name, db_name):
     app = create_app({
         "Q_ENV": "testing",
         "DATABASE": db_name,
-        "G_FOLDER": g_folder_name,
-        "G_DIR_STRUCT": g_dir_struct,
+        "BLOB_ROOT": blob_root_name,
         "DIFFICULTY_LIMITS": [3, 6, None],
         "TESTING": True
     })
@@ -85,17 +66,21 @@ def flask_app(g_dir_struct, g_folder_name, db_name):
 
 
 @pytest.fixture(scope="session")
-def g_file_id(google_drive, g_dir_struct, input_dir):
-    parent = QuizzrTPM.get_dir_id(g_dir_struct, "/")
+def firebase_bucket(flask_app):
+    return storage.bucket()
+
+
+@pytest.fixture(scope="session")
+def blob_file(firebase_bucket, flask_app, input_dir):
     file_name = "test.wav"
-    file_metadata = {"name": file_name, "parents": [parent]}
     file_path = os.path.join(input_dir, file_name)
 
-    media = MediaFileUpload(file_path, mimetype="audio/wav")
-    gfile = google_drive.service.files().create(body=file_metadata, media_body=media, fields="id").execute()
-    gfile_id = gfile.get("id")
-    yield gfile_id
-    google_drive.service.files().delete(fileId=gfile_id).execute()
+    blob_name = secrets.token_urlsafe(nbytes=32)
+    blob_path = "/".join([flask_app.config["BLOB_ROOT"], "normal", blob_name])
+    blob = firebase_bucket.blob(blob_path)
+    blob.upload_from_filename(file_path)
+    yield blob_name
+    blob.delete()
 
 
 @pytest.fixture(scope="session")
