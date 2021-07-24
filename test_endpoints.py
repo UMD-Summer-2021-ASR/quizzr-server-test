@@ -7,12 +7,15 @@ import bson
 import pytest
 
 from testutil import match_status, generate_audio_id
+import logging
+
+logger = logging.getLogger(__name__)
 # For testing cases that the server is designed to handle on a regular basis.
 
 
 @pytest.mark.usefixtures("mongodb", "client")
 class TestCheckAnswer:
-    ROUTE = "/answer/check"
+    ROUTE = "/answer"
     CORRECT_ANSWER = "Eiffel Tower"
     CORRECT_ANSWER_INSERTIONS = "The " + CORRECT_ANSWER + " of Paris"
     CORRECT_ANSWER_TYPOS = "riffle topwer"
@@ -59,7 +62,7 @@ class TestCheckAnswer:
 
 @pytest.mark.usefixtures("blob_file")
 class TestGetFile:
-    ROUTE = "/download"
+    ROUTE = "/audio"
 
     @pytest.fixture
     def full_route(self, blob_file):
@@ -72,7 +75,7 @@ class TestGetFile:
 
 @pytest.mark.usefixtures("mongodb", "client", "flask_app")
 class TestGetRec:
-    ROUTE = "/answer/"
+    ROUTE = "/question"
 
     @pytest.fixture
     def doc_setup(self, mongodb, flask_app):
@@ -118,7 +121,7 @@ class TestGetTranscript:
     MIN_DOCS_RANDOM = 3
     BATCH_SIZE = 3
 
-    ROUTE = "/record/"
+    ROUTE = "/question/unrec"
 
     @pytest.fixture(scope="session")
     def difficulty_limits(self, flask_app):
@@ -359,7 +362,7 @@ class TestGetTranscript:
 
 @pytest.mark.usefixtures("client", "mongodb")
 class TestGetUnprocAudio:
-    ROUTE = "/audio/unprocessed/"
+    ROUTE = "/audio"
 
     @pytest.fixture
     def unrec_question(self, mongodb):
@@ -427,7 +430,7 @@ class TestGetUnprocAudio:
 
 @pytest.mark.usefixtures("client", "mongodb")
 class TestProcessAudio:
-    ROUTE = "/audio/processed"
+    ROUTE = "/audio"
 
     @pytest.fixture
     def unrec_question(self, mongodb):
@@ -480,7 +483,7 @@ class TestProcessAudio:
     def test_single(self, client, mongodb, update_batch, unproc_audio_document, unrec_question, user):
         doc_required_fields = ["_id", "version", "questionId", "userId", "transcript", "vtt", "score", "batchNumber",
                                "metadata", "gentleVtt", "recType"]
-        response = client.post(self.ROUTE, json={"arguments": update_batch})
+        response = client.patch(self.ROUTE, json={"arguments": update_batch})
         response_body = response.get_json()
         assert response_body["total"] == len(update_batch)
         assert response_body["successes"] == response_body["total"]
@@ -496,7 +499,7 @@ class TestProcessAudio:
 
 @pytest.mark.usefixtures("client", "mongodb", "firebase_bucket", "input_dir")
 class TestUploadRec:
-    ROUTE = "/upload"
+    ROUTE = "/audio"
     CONTENT_TYPE = "multipart/form-data"
 
     @pytest.fixture
@@ -538,6 +541,22 @@ class TestUploadRec:
         audio.close()
 
     @pytest.fixture
+    def mismatch_data(self, mongodb, input_dir, unrec_qid):
+        audio_path = os.path.join(input_dir, "mismatch.wav")
+        assert os.path.exists(audio_path)
+        audio = open(audio_path, "rb")
+        yield {"qid": unrec_qid, "audio": audio, "recType": "normal"}
+        audio.close()
+
+    @pytest.fixture
+    def bad_env_data(self, mongodb, input_dir, unrec_qid):
+        audio_path = os.path.join(input_dir, "bad_env.wav")
+        assert os.path.exists(audio_path)
+        audio = open(audio_path, "rb")
+        yield {"qid": unrec_qid, "audio": audio, "recType": "normal"}
+        audio.close()
+
+    @pytest.fixture
     def admin_data(self, exact_data):
         data = exact_data.copy()
         data["diarMetadata"] = "detect_num_speakers=False, max_num_speakers=3"
@@ -551,16 +570,33 @@ class TestUploadRec:
         yield {"audio": audio, "recType": "buzz"}
         audio.close()
 
-    # Test Case: Submitting a recording with exact accuracy.
-    def test_exact(self, client, mongodb, exact_data, upload_cleanup, user_id):
+    # Test Case: Submitting a recording that should be guaranteed to pass the pre-screening.
+    def test_success(self, client, mongodb, exact_data, upload_cleanup, user_id):
         doc_required_fields = ["gentleVtt", "questionId", "userId", "recType"]
         response = client.post(self.ROUTE, data=exact_data, content_type=self.CONTENT_TYPE)
-        response_body = response.get_json()
         assert match_status(HTTPStatus.ACCEPTED, response.status)
+        response_body = response.get_json()
         assert response_body.get("prescreenSuccessful")
         audio_doc = mongodb.UnprocessedAudio.find_one()
         for field in doc_required_fields:
             assert field in audio_doc
+
+    # Test Case: Submitting a recording with audio distorted by environmental noise.
+    def test_bad_env(self, client, mongodb, bad_env_data, upload_cleanup, user_id):
+        response = client.post(self.ROUTE, data=bad_env_data, content_type=self.CONTENT_TYPE)
+        assert match_status(HTTPStatus.ACCEPTED, response.status)
+        response_body = response.get_json()
+        logger.debug(f"response_body = {response_body}")
+        assert response_body.get("prescreenSuccessful")
+
+    # Test Case: Submitting a recording of the speaker reading a paragraph from the "Lorem ipsum" Wikipedia article.
+    # Source: https://en.wikipedia.org/wiki/Lorem_ipsum
+    def test_mismatch(self, client, mongodb, mismatch_data, upload_cleanup, user_id):
+        response = client.post(self.ROUTE, data=mismatch_data, content_type=self.CONTENT_TYPE)
+        assert match_status(HTTPStatus.ACCEPTED, response.status)
+        response_body = response.get_json()
+        logger.debug(f"response_body = {response_body}")
+        assert not response_body.get("prescreenSuccessful")
 
     # Test Case: Submitting a recording as an administrator.
     def test_admin(self, mongodb, client, admin_data, upload_cleanup, user_id):
@@ -569,6 +605,7 @@ class TestUploadRec:
         response_body = response.get_json()
         assert match_status(HTTPStatus.ACCEPTED, response.status)
         assert response_body.get("prescreenSuccessful")
+        logger.debug(f"response_body = {response_body}")
         audio_doc = mongodb.UnprocessedAudio.find_one()
         assert audio_doc
         for field in doc_required_fields:
@@ -580,6 +617,7 @@ class TestUploadRec:
         doc_required_fields = ["userId", "recType"]
         response = client.post(self.ROUTE, data=buzz_data, content_type=self.CONTENT_TYPE)
         response_body = response.get_json()
+        logger.debug(f"response_body = {response_body}")
         assert match_status(HTTPStatus.ACCEPTED, response.status)
         assert response_body.get("prescreenSuccessful")
 
