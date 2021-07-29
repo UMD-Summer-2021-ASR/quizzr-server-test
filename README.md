@@ -11,6 +11,8 @@ This testing module tests the functionality of the server's endpoints in normal 
 * `TestGetRec`
 * `TestGetTranscript`
 * `TestGetUnprocAudio`
+* `TestOwnProfile`
+* `TestOtherProfile`
 * `TestProcessAudio`
 * `TestUploadRec`
 
@@ -34,3 +36,5 @@ The name of each class in a testing module defines the action that the associate
 | `TestGetUnprocAudio` | Get a batch of unprocessed audio documents.                    |
 | `TestProcessAudio`   | Update a batch of audio documents with processing information. |
 | `TestUploadRec`      | Submit a recording for pre-screening.                          |
+| `TestOwnProfile`     | Perform operations on the user's own profile.                  |
+| `TestOtherProfile`   | Perform operations on the profiles of other users.             |

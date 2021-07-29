@@ -15,6 +15,11 @@ def db_name():
 
 
 @pytest.fixture(scope="session")
+def dev_uid():
+    return "dev"
+
+
+@pytest.fixture(scope="session")
 def blob_root_name():
     return "testing"
 
@@ -54,12 +59,13 @@ def mongodb_client():
 
 
 @pytest.fixture(scope="session")
-def flask_app(blob_root_name, db_name):
+def flask_app(blob_root_name, db_name, dev_uid):
     app = create_app({
         "Q_ENV": "testing",
         "DATABASE": db_name,
         "BLOB_ROOT": blob_root_name,
         "DIFFICULTY_LIMITS": [3, 6, None],
+        "DEV_UID": dev_uid,
         "TESTING": True
     })
     return app
