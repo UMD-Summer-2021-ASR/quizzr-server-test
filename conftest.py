@@ -9,6 +9,9 @@ from firebase_admin import storage
 from server import create_app
 
 
+DIFFICULTY_LIMITS = [3, 6, None]
+
+
 @pytest.fixture(scope="session")
 def db_name():
     return "QuizzrDatabaseTest"
@@ -59,7 +62,7 @@ def flask_app(blob_root_name, db_name):
         "Q_ENV": "testing",
         "DATABASE": db_name,
         "BLOB_ROOT": blob_root_name,
-        "DIFFICULTY_LIMITS": [3, 6, None],
+        "DIFFICULTY_LIMITS": DIFFICULTY_LIMITS,
         "TESTING": True
     })
     return app

@@ -6,6 +6,7 @@ from http import HTTPStatus
 import bson
 import pytest
 
+import conftest
 from testutil import match_status, generate_audio_id
 import logging
 
@@ -80,38 +81,58 @@ class TestGetRec:
     @pytest.fixture
     def doc_setup(self, mongodb, flask_app):
         num_docs = 5
-        audio_docs = []
-        for i in range(1, num_docs + 1):
-            audio_docs.append({
-                "_id": generate_audio_id(),
-                "vtt": "The quick brown fox jumps over the lazy dog.",
-                "gentleVtt": "This is a dummy VTT.",
-                "version": flask_app.config["VERSION"],
-                "score": {
-                    "wer": i,
-                    "mer": i,
-                    "wil": i
-                }
+        num_sentences = 5
+        test_audio_docs = []
+        inserted_audio_ids = []
+        inserted_question_ids = []
+        for i in range(num_sentences):
+            audio_ids = []
+            for j in range(num_docs):
+                audio_ids.append(generate_audio_id())
+            question_result = mongodb.RecordedQuestions.insert_one({
+                "qb_id": 0,
+                "sentenceId": i,
+                "transcript": str(bson.ObjectId()),
+                "recDifficulty": 0,
+                "answer": "Foo",
+                "recordings": [{"id": rec_id, "recType": "normal"} for rec_id in audio_ids]
             })
-        test_audio_doc = audio_docs[0]
-        random.shuffle(audio_docs)
-        audio_results = mongodb.Audio.insert_many(audio_docs)
-        question_result = mongodb.RecordedQuestions.insert_one({
-            "recordings": [{"id": rec_id, "recType": "normal"} for rec_id in audio_results.inserted_ids]
-        })
-        yield test_audio_doc
-        mongodb.Audio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
-        mongodb.RecordedQuestions.delete_one({"_id": question_result.inserted_id})
+
+            audio_docs = []
+            for j, audio_id in enumerate(audio_ids):
+                audio_docs.append({
+                    "_id": audio_id,
+                    "sentenceId": i,
+                    "questionId": 0,
+                    "vtt": "The quick brown fox jumps over the lazy dog.",
+                    "gentleVtt": "This is a dummy VTT.",
+                    "version": flask_app.config["VERSION"],
+                    "score": {
+                        "wer": j + 1,
+                        "mer": j + 1,
+                        "wil": j + 1
+                    }
+                })
+
+            test_audio_docs.append(audio_docs[0])
+            random.shuffle(audio_docs)
+            audio_results = mongodb.Audio.insert_many(audio_docs)
+            inserted_audio_ids += audio_results.inserted_ids
+            inserted_question_ids.append(question_result.inserted_id)
+        yield test_audio_docs
+        mongodb.Audio.delete_many({"_id": {"$in": inserted_audio_ids}})
+        mongodb.RecordedQuestions.delete_many({"_id": {"$in": inserted_question_ids}})
 
     # Test Case: No difficulty specified
     def test_any(self, client, doc_setup):
-        required_response_fields = ["_id", "vtt", "gentleVtt", "qid"]
+        required_response_fields = ["_id", "vtt", "gentleVtt", "questionId", "sentenceId"]
         response = client.get(self.ROUTE)
         response_body = response.get_json()
         assert match_status(HTTPStatus.OK, response.status)
-        for field in required_response_fields:
-            assert field in response_body
-        assert doc_setup["_id"] == response_body["_id"]
+        for doc in response_body["results"]:
+            for field in required_response_fields:
+                assert field in doc
+            assert doc_setup[doc["sentenceId"]]["_id"] == doc["_id"]
 
 
 @pytest.mark.usefixtures("client", "flask_app", "mongodb")
@@ -120,6 +141,7 @@ class TestGetTranscript:
     RANDOM_TRIALS = 5
     MIN_DOCS_RANDOM = 3
     BATCH_SIZE = 3
+    NUM_SENTENCES = 5
 
     ROUTE = "/question/unrec"
 
@@ -166,7 +188,8 @@ class TestGetTranscript:
     def difficulties_question(self, mongodb, rec_difficulties):
         question_docs = []
         for d in rec_difficulties:
-            question_docs.append({"transcript": "Foo", "recDifficulty": d})
+            for j in range(0, self.NUM_SENTENCES):
+                question_docs.append({"qb_id": d, "sentenceId": j, "transcript": "Foo", "recDifficulty": d})
 
         question_results = mongodb.UnrecordedQuestions.insert_many(question_docs)
         yield question_results.inserted_ids
@@ -176,7 +199,8 @@ class TestGetTranscript:
     def difficulties_questions(self, mongodb, difficulty_bounds):
         question_docs = []
         for i in range(difficulty_bounds[0], difficulty_bounds[1] + 1):
-            question_docs.append({"transcript": str(bson.ObjectId()), "recDifficulty": i})  # Equivalence buster
+            for j in range(0, self.NUM_SENTENCES):
+                question_docs.append({"qb_id": i, "sentenceId": j, "transcript": str(bson.ObjectId()), "recDifficulty": i})  # Equivalence buster
 
         question_results = mongodb.UnrecordedQuestions.insert_many(question_docs)
         yield question_results.inserted_ids
@@ -186,7 +210,8 @@ class TestGetTranscript:
     def question_batch(self, mongodb):
         question_docs = []
         for i in range(0, self.BATCH_SIZE + 1):
-            question_docs.append({"transcript": "Foo"})
+            for j in range(0, self.NUM_SENTENCES):
+                question_docs.append({"qb_id": i, "sentenceId": j, "transcript": "Foo"})
 
         question_results = mongodb.UnrecordedQuestions.insert_many(question_docs)
         yield question_results.inserted_ids
@@ -234,9 +259,28 @@ class TestGetTranscript:
         yield question_results.inserted_ids
         mongodb.UnrecordedQuestions.delete_many({"_id": {"$in": question_results.inserted_ids}})
 
+    @pytest.fixture(scope="class")
+    def questions(self, mongodb, rec_difficulties):
+        sentence_docs = []
+        qb_id = 0
+        for d in rec_difficulties:
+            for i in range(0, self.BATCH_SIZE):
+                for j in range(0, self.NUM_SENTENCES):
+                    sentence_docs.append({
+                        "qb_id": qb_id,
+                        "sentenceId": j,
+                        "transcript": str(bson.ObjectId()),  # Equivalence buster
+                        "recDifficulty": d
+                    })
+                    qb_id += 1
+
+        question_results = mongodb.UnrecordedQuestions.insert_many(sentence_docs)
+        yield question_results.inserted_ids
+        mongodb.UnrecordedQuestions.delete_many({"_id": {"$in": question_results.inserted_ids}})
+
     # Test Case: No difficulty specified
-    def test_any(self, client, question_doc):
-        required_response_fields = ["id", "transcript"]
+    def test_any(self, client, questions):
+        required_response_fields = ["id", "sentenceId", "transcript"]
         response = client.get(self.ROUTE)
         assert match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
@@ -246,7 +290,7 @@ class TestGetTranscript:
             assert field in doc
 
     # Test to see if the document retrieved is not always the same.
-    def test_any_random(self, client, question_docs):
+    def test_any_random(self, client, questions):
         max_attempts = self.RANDOM_TRIALS
 
         attempts = 0
@@ -261,7 +305,7 @@ class TestGetTranscript:
         assert attempts < max_attempts
     
     # Test Cases: Request for each difficulty
-    def test_difficulty(self, client, mongodb, difficulties_question, difficulty_limits):
+    def test_difficulty(self, client, mongodb, questions, difficulty_limits):
         for i in range(0, self.DIFFICULTY_TRIALS):
             for j, limit in enumerate(difficulty_limits):
                 lower = difficulty_limits[j - 1] + 1 if j > 0 else None
@@ -271,14 +315,14 @@ class TestGetTranscript:
                 response_body = response.get_json()
                 assert "results" in response_body and len(response_body["results"]) > 0
                 doc = response_body["results"][0]
-                question = mongodb.UnrecordedQuestions.find_one({"_id": bson.ObjectId(doc["id"])})
+                question = mongodb.UnrecordedQuestions.find_one({"qb_id": doc["id"]})
                 if lower is not None:
                     assert lower <= question["recDifficulty"]
                 if upper is not None:
                     assert question["recDifficulty"] <= upper
 
     # Same as test_any_random, but for each difficulty
-    def test_difficulty_random(self, client, difficulties_questions, difficulty_limits):
+    def test_difficulty_random(self, client, questions, difficulty_limits):
         max_attempts = self.RANDOM_TRIALS
         for i in range(len(difficulty_limits)):
             attempts = 0
@@ -293,8 +337,8 @@ class TestGetTranscript:
             assert attempts < max_attempts
 
     # Test Case: Getting a batch of documents from a collection
-    def test_batch(self, client, question_batch):
-        required_response_fields = ["id", "transcript"]
+    def test_batch(self, client, questions):
+        required_response_fields = ["id", "sentenceId", "transcript"]
         response = client.get(self.ROUTE, query_string={"batchSize": self.BATCH_SIZE})
         assert match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
@@ -305,15 +349,15 @@ class TestGetTranscript:
                 assert field in doc
 
     # Test Case: Attempting to get a batch of documents larger than the size of the collection
-    def test_batch_lesser(self, client, question_batch_lesser):
-        response = client.get(self.ROUTE, query_string={"batchSize": self.BATCH_SIZE})
+    def test_batch_lesser(self, client, questions):
+        response = client.get(self.ROUTE, query_string={"batchSize": len(questions) + 1})
         assert match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
         assert "results" in response_body
-        assert len(response_body["results"]) < self.BATCH_SIZE
+        assert len(response_body["results"]) <= len(questions)
 
     # Same as test_any_random, but for a batch of questions
-    def test_batch_random(self, client, question_batch_random):
+    def test_batch_random(self, client, questions):
         max_attempts = self.RANDOM_TRIALS
 
         attempts = 0
@@ -328,7 +372,7 @@ class TestGetTranscript:
         assert attempts < max_attempts
 
     # Test Case: Difficulty and batch size parameters combined
-    def test_difficulty_batch(self, client, mongodb, difficulties_question, difficulty_limits):
+    def test_difficulty_batch(self, client, mongodb, questions, difficulty_limits):
         for i in range(0, self.DIFFICULTY_TRIALS):
             for j, limit in enumerate(difficulty_limits):
                 lower = difficulty_limits[j - 1] + 1 if j > 0 else None
@@ -338,14 +382,14 @@ class TestGetTranscript:
                 response_body = response.get_json()
                 assert "results" in response_body and len(response_body["results"]) > 0
                 for doc in response_body["results"]:
-                    question = mongodb.UnrecordedQuestions.find_one({"_id": bson.ObjectId(doc["id"])})
+                    question = mongodb.UnrecordedQuestions.find_one({"qb_id": doc["id"]})
                     if lower is not None:
                         assert lower <= question["recDifficulty"]
                     if upper is not None:
                         assert question["recDifficulty"] <= upper
 
     # Difficulty and batch size parameters with randomization test applied
-    def test_difficulty_batch_random(self, client, difficulties_question_batch_random, difficulty_limits):
+    def test_difficulty_batch_random(self, client, questions, difficulty_limits):
         max_attempts = self.RANDOM_TRIALS
         for i in range(len(difficulty_limits)):
             attempts = 0
@@ -358,6 +402,31 @@ class TestGetTranscript:
                     break
                 attempts += 1
             assert attempts < max_attempts
+
+    @pytest.mark.parametrize("difficulty_limits", [None, conftest.DIFFICULTY_LIMITS])
+    @pytest.mark.parametrize("test_random", [True, False])
+    @pytest.mark.skip(reason="not finished")
+    def test_single(self, client, question_docs, difficulty_limits, test_random):
+        if test_random:
+            max_attempts = self.RANDOM_TRIALS
+        else:
+            max_attempts = 0
+        if difficulty_limits:
+            for i in range(len(difficulty_limits)):
+                attempts = 0
+                response = client.get(self.ROUTE, query_string={"batchSize": self.BATCH_SIZE, "difficultyType": i})
+                assert match_status(HTTPStatus.OK, response.status)
+                previous_response_body = response.get_json()
+                assert "results" in previous_response_body and len(previous_response_body["results"]) > 0
+
+                if test_random:
+                    while attempts < max_attempts:
+                        response = client.get(self.ROUTE, query_string={"batchSize": self.BATCH_SIZE, "difficultyType": i})
+                        response_body = response.get_json()
+                        if response_body != previous_response_body:
+                            break
+                        attempts += 1
+                    assert attempts < max_attempts
 
 
 @pytest.mark.usefixtures("client", "mongodb")
