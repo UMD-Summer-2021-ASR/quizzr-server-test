@@ -498,7 +498,7 @@ class TestProcessAudio:
         assert recording["recType"] == "normal"
 
 
-@pytest.mark.usefixtures("client", "mongodb", "firebase_bucket", "input_dir")
+@pytest.mark.usefixtures("client", "mongodb", "firebase_bucket", "input_dir", "dev_uid")
 class TestUploadRec:
     ROUTE = "/audio"
     CONTENT_TYPE = "multipart/form-data"
@@ -514,8 +514,8 @@ class TestUploadRec:
         mongodb.UnrecordedQuestions.delete_one({"_id": question_result.inserted_id})
 
     @pytest.fixture
-    def user_id(self, mongodb):
-        user_result = mongodb.Users.insert_one({"recordedAudios": []})
+    def user_id(self, mongodb, dev_uid):
+        user_result = mongodb.Users.insert_one({"_id": dev_uid, "recordedAudios": []})
         yield user_result.inserted_id
         mongodb.Users.delete_one({"_id": user_result.inserted_id})
 
