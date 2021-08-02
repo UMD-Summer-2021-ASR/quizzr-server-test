@@ -3,12 +3,13 @@ import random
 from copy import deepcopy
 from datetime import datetime
 from http import HTTPStatus
+import logging
 
 import bson
 import pytest
+from openapi_schema_validator import validate
 
 from testutil import match_status, generate_audio_id
-import logging
 
 logger = logging.getLogger(__name__)
 # For testing cases that the server is designed to handle on a regular basis.
@@ -634,7 +635,7 @@ class TestUploadRec:
         assert rec["recType"] == "buzz"
 
 
-@pytest.mark.usefixtures("client", "mongodb", "server_api_doc", "dev_uid")
+@pytest.mark.usefixtures("client", "mongodb", "api_spec", "dev_uid")
 class TestOwnProfile:
     ROUTE = "/profile"
 
@@ -656,34 +657,20 @@ class TestOwnProfile:
         }
 
     @pytest.fixture
-    def user_profile(self, mongodb, server_api_doc, dev_uid):
-        user_schema = server_api_doc["components"]["schemas"]["User"]
+    def user_profile(self, mongodb, api_spec, dev_uid):
+        user_schema = api_spec["components"]["schemas"]["User"]
         profile = deepcopy(user_schema["examples"][0])
         profile["_id"] = dev_uid
         result = mongodb.Users.insert_one(profile)
         yield profile
         mongodb.Users.delete_one({"_id": result.inserted_id})
 
-    def test_create(self, client, mongodb, profile_args, dev_uid):
-        required_fields = [
-            "pfp",
-            "username",
-            "usernameSpecs",
-            "rating",
-            "totalQuestionsPlayed",
-            "totalGames",
-            "coins",
-            "coinsCumulative",
-            "activityOverview",
-            "recordedAudios",
-            "permLevel"
-        ]
+    def test_create(self, client, mongodb, profile_args, dev_uid, api_spec):
         response = client.post(self.ROUTE, json=profile_args)
         assert match_status(HTTPStatus.CREATED, response.status)
         profile = mongodb.Users.find_one({"_id": dev_uid})
         assert profile
-        for field in required_fields:
-            assert field in profile
+        validate(profile, api_spec.get_schema("User", resolve_references=True))
 
     def test_get(self, client, user_profile):
         required_fields = [
@@ -719,7 +706,7 @@ class TestOwnProfile:
         assert not mongodb.Users.find_one({"_id": user_profile["_id"]})
 
 
-@pytest.mark.usefixtures("client", "mongodb", "server_api_doc", "dev_uid")
+@pytest.mark.usefixtures("client", "mongodb", "api_spec", "dev_uid")
 class TestOtherProfile:
     ROUTE = "/profile"
 
@@ -741,8 +728,8 @@ class TestOtherProfile:
         }
 
     @pytest.fixture
-    def admin_profile(self, mongodb, server_api_doc, dev_uid):
-        user_schema = server_api_doc["components"]["schemas"]["User"]
+    def admin_profile(self, mongodb, api_spec, dev_uid):
+        user_schema = api_spec["components"]["schemas"]["User"]
         profile = deepcopy(user_schema["examples"][0])
         profile.update({
             "_id": dev_uid,
@@ -754,14 +741,14 @@ class TestOtherProfile:
         mongodb.Users.delete_one({"_id": result.inserted_id})
 
     @pytest.fixture
-    def other_profile(self, mongodb, server_api_doc, dev_uid):
-        user_schema = server_api_doc["components"]["schemas"]["User"]
+    def other_profile(self, mongodb, api_spec, dev_uid):
+        user_schema = api_spec["components"]["schemas"]["User"]
         profile = user_schema["examples"][0]
         result = mongodb.Users.insert_one(profile)
         yield profile
         mongodb.Users.delete_one({"_id": result.inserted_id})
 
-    def test_get(self, client, other_profile, server_api_doc):
+    def test_get(self, client, other_profile, api_spec):
         full_route = "/".join([self.ROUTE, other_profile["username"]])
         response = client.get(full_route)
         assert match_status(HTTPStatus.OK, response.status)

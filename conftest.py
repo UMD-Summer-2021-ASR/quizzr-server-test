@@ -3,10 +3,10 @@ import secrets
 
 import pymongo
 import pytest
-import yaml
 from firebase_admin import storage
 
 from server import create_app
+from sv_api import QuizzrAPISpec
 
 
 @pytest.fixture(scope="session")
@@ -35,15 +35,8 @@ def input_dir():
 
 
 @pytest.fixture(scope="session")
-def api_doc_path(qs_dir):
-    return os.path.join(qs_dir, "api", "backend.yaml")
-
-
-@pytest.fixture(scope="session")
-def server_api_doc(api_doc_path):
-    with open(api_doc_path) as api_f:
-        api = yaml.load(api_f.read(), Loader=yaml.FullLoader)
-    return api
+def api_spec(qs_dir):
+    return QuizzrAPISpec(os.path.join(qs_dir, "reference", "backend.yaml"))
 
 
 @pytest.fixture(scope="session")
@@ -66,7 +59,8 @@ def flask_app(blob_root_name, db_name, dev_uid):
         "BLOB_ROOT": blob_root_name,
         "DIFFICULTY_LIMITS": [3, 6, None],
         "DEV_UID": dev_uid,
-        "TESTING": True
+        "TESTING": True,
+        "USE_ID_TOKENS": False
     })
     return app
 
