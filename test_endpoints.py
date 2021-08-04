@@ -9,7 +9,6 @@ import bson
 import pytest
 from openapi_schema_validator import validate
 
-import conftest
 import testutil
 
 logger = logging.getLogger(__name__)
@@ -27,8 +26,9 @@ class TestCheckAnswer:
 
     @pytest.fixture
     def question_id(self, mongodb):
-        question_result = mongodb.RecordedQuestions.insert_one({"answer": self.CORRECT_ANSWER})
-        yield question_result.inserted_id
+        qb_id = 1234
+        question_result = mongodb.RecordedQuestions.insert_one({"answer": self.CORRECT_ANSWER, "qb_id": qb_id})
+        yield qb_id
         mongodb.RecordedQuestions.delete_one({"_id": question_result.inserted_id})
 
     # Test Case: The user provides a correct answer
@@ -170,7 +170,6 @@ class TestGetRec:
                     expected_uid = uid
                 else:
                     assert expected_uid == uid
-
 
 
 @pytest.mark.usefixtures("client", "flask_app", "mongodb")
@@ -441,31 +440,6 @@ class TestGetTranscript:
                 attempts += 1
             assert attempts < max_attempts
 
-    @pytest.mark.parametrize("difficulty_limits", [None, conftest.DIFFICULTY_LIMITS])
-    @pytest.mark.parametrize("test_random", [True, False])
-    @pytest.mark.skip(reason="not finished")
-    def test_single(self, client, question_docs, difficulty_limits, test_random):
-        if test_random:
-            max_attempts = self.RANDOM_TRIALS
-        else:
-            max_attempts = 0
-        if difficulty_limits:
-            for i in range(len(difficulty_limits)):
-                attempts = 0
-                response = client.get(self.ROUTE, query_string={"batchSize": self.BATCH_SIZE, "difficultyType": i})
-                assert testutil.match_status(HTTPStatus.OK, response.status)
-                previous_response_body = response.get_json()
-                assert "results" in previous_response_body and len(previous_response_body["results"]) > 0
-
-                if test_random:
-                    while attempts < max_attempts:
-                        response = client.get(self.ROUTE, query_string={"batchSize": self.BATCH_SIZE, "difficultyType": i})
-                        response_body = response.get_json()
-                        if response_body != previous_response_body:
-                            break
-                        attempts += 1
-                    assert attempts < max_attempts
-
 
 @pytest.mark.usefixtures("client", "mongodb")
 class TestGetUnprocAudio:
@@ -633,14 +607,14 @@ class TestUploadRec:
             fid = audio_doc["_id"]
             firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], "normal", fid])).delete()
         mongodb.UnprocessedAudio.delete_many({"_id": {"$exists": True}})
-        audio_cursor = mongodb.Audio.find(None, {"_id": 1})
+        audio_cursor = mongodb.Audio.find(None, {"_id": 1, "recType": 1})
         for audio_doc in audio_cursor:
             fid = audio_doc["_id"]
-            firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], "buzz", fid])).delete()
+            firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], audio_doc["recType"], fid])).delete()
         mongodb.Audio.delete_many({"_id": {"$exists": True}})
 
     @pytest.fixture
-    def exact_data(self, mongodb, input_dir, unrec_qid):
+    def exact_data(self, input_dir, unrec_qid):
         audio_path = os.path.join(input_dir, "exact.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
@@ -648,7 +622,7 @@ class TestUploadRec:
         audio.close()
 
     @pytest.fixture
-    def mismatch_data(self, mongodb, input_dir, unrec_qid):
+    def mismatch_data(self, input_dir, unrec_qid):
         audio_path = os.path.join(input_dir, "mismatch.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
@@ -656,7 +630,7 @@ class TestUploadRec:
         audio.close()
 
     @pytest.fixture
-    def bad_env_data(self, mongodb, input_dir, unrec_qid):
+    def bad_env_data(self, input_dir, unrec_qid):
         audio_path = os.path.join(input_dir, "bad_env.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
@@ -670,11 +644,19 @@ class TestUploadRec:
         return data
 
     @pytest.fixture
-    def buzz_data(self, mongodb, input_dir):
+    def buzz_data(self, input_dir):
         audio_path = os.path.join(input_dir, "buzz.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
         yield {"audio": audio, "recType": "buzz"}
+        audio.close()
+
+    @pytest.fixture
+    def answer_data(self, input_dir, unrec_qid):
+        audio_path = os.path.join(input_dir, "answer.wav")
+        assert os.path.exists(audio_path)
+        audio = open(audio_path, "rb")
+        yield {"audio": audio, "recType": "answer", "qid": unrec_qid}
         audio.close()
 
     # Test Case: Submitting a recording that should be guaranteed to pass the pre-screening.
@@ -738,6 +720,26 @@ class TestUploadRec:
         rec = user_doc["recordedAudios"][0]
         assert rec["id"] == audio_doc["_id"]
         assert rec["recType"] == "buzz"
+
+    # Test Case: Submitting a recording for an answer.
+    def test_answer(self, mongodb, client, answer_data, upload_cleanup, user_id):
+        doc_required_fields = ["userId", "recType"]
+        response = client.post(self.ROUTE, data=answer_data, content_type=self.CONTENT_TYPE)
+        response_body = response.get_json()
+        logger.debug(f"response_body = {response_body}")
+        assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
+        assert response_body.get("prescreenSuccessful")
+
+        audio_doc = mongodb.Audio.find_one()
+        assert audio_doc
+        for field in doc_required_fields:
+            assert field in audio_doc
+        assert audio_doc["recType"] == "answer"
+
+        user_doc = mongodb.Users.find_one({"_id": user_id})
+        rec = user_doc["recordedAudios"][0]
+        assert rec["id"] == audio_doc["_id"]
+        assert rec["recType"] == "answer"
 
 
 @pytest.mark.usefixtures("client", "mongodb", "api_spec", "dev_uid")
