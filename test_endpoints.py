@@ -10,9 +10,10 @@ import pytest
 from openapi_schema_validator import validate
 
 import conftest
-from testutil import match_status, generate_audio_id
+import testutil
 
 logger = logging.getLogger(__name__)
+# TODO: Replace ROUTE class attributes with pytest fixtures that use QuizzrAPISpec.path_for()
 # For testing cases that the server is designed to handle on a regular basis.
 
 
@@ -33,7 +34,7 @@ class TestCheckAnswer:
     # Test Case: The user provides a correct answer
     def test_correct_exact(self, client, question_id):
         response = client.get(self.ROUTE, query_string={"qid": question_id, "a": self.CORRECT_ANSWER})
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
         assert "correct" in response_body
         assert response_body["correct"]
@@ -41,7 +42,7 @@ class TestCheckAnswer:
     # Test Case: The user provides a correct answer, along with some extra words
     def test_correct_extra(self, client, question_id):
         response = client.get(self.ROUTE, query_string={"qid": question_id, "a": self.CORRECT_ANSWER_INSERTIONS})
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
         assert "correct" in response_body
         assert response_body["correct"]
@@ -49,7 +50,7 @@ class TestCheckAnswer:
     # Test Case: The user provides a correct answer with some typos.
     def test_correct_typos(self, client, question_id):
         response = client.get(self.ROUTE, query_string={"qid": question_id, "a": self.CORRECT_ANSWER_TYPOS})
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
         assert "correct" in response_body
         assert response_body["correct"]
@@ -57,7 +58,7 @@ class TestCheckAnswer:
     # Test Case: The user provides an incorrect answer
     def test_incorrect(self, client, question_id):
         response = client.get(self.ROUTE, query_string={"qid": question_id, "a": self.INCORRECT_ANSWER})
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
         assert "correct" in response_body
         assert not response_body["correct"]
@@ -73,12 +74,16 @@ class TestGetFile:
 
     def test_download(self, client, full_route):
         response = client.get(full_route)
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
 
 
-@pytest.mark.usefixtures("mongodb", "client", "flask_app")
+@pytest.mark.usefixtures("mongodb", "client", "flask_app", "api_spec")
 class TestGetRec:
     ROUTE = "/question"
+
+    @pytest.fixture(scope="session")
+    def path_op_pair(self, api_spec):
+        return api_spec.path_for("pick_game_question")
 
     @pytest.fixture
     def doc_setup(self, mongodb, flask_app):
@@ -87,10 +92,48 @@ class TestGetRec:
         test_audio_docs = []
         inserted_audio_ids = []
         inserted_question_ids = []
+        user_ids = [testutil.generate_uid(), testutil.generate_uid()]
+        mongodb.Users.insert_many([
+            {"_id": user_ids[0], "recordedAudios": []},
+            {"_id": user_ids[1], "recordedAudios": []}
+        ])
         for i in range(num_sentences):
             audio_ids = []
+            audio_docs = []
             for j in range(num_docs):
-                audio_ids.append(generate_audio_id())
+                audio_id = testutil.generate_audio_id()
+                audio_ids.append(audio_id)
+                audio_docs.append({
+                    "_id": audio_id,
+                    "sentenceId": i,
+                    "qb_id": 0,
+                    "vtt": "The quick brown fox jumps over the lazy dog.",
+                    "gentleVtt": "This is a dummy VTT.",
+                    "version": flask_app.config["VERSION"],
+                    "score": {
+                        "wer": (num_sentences - i) + j + 1,
+                        "mer": (num_sentences - i) + j + 1,
+                        "wil": (num_sentences - i) + j + 1
+                    },
+                    "userId": user_ids[0]
+                })
+                audio_id = testutil.generate_audio_id()
+                audio_ids.append(audio_id)
+                audio_docs.append({
+                    "_id": audio_id,
+                    "sentenceId": i,
+                    "qb_id": 0,
+                    "vtt": "The quick brown fox jumps over the lazy dog.",
+                    "gentleVtt": "This is a dummy VTT.",
+                    "version": flask_app.config["VERSION"],
+                    "score": {
+                        "wer": i + j + 1,
+                        "mer": i + j + 1,
+                        "wil": i + j + 1
+                    },
+                    "userId": user_ids[1]
+                })
+
             question_result = mongodb.RecordedQuestions.insert_one({
                 "qb_id": 0,
                 "sentenceId": i,
@@ -100,22 +143,6 @@ class TestGetRec:
                 "recordings": [{"id": rec_id, "recType": "normal"} for rec_id in audio_ids]
             })
 
-            audio_docs = []
-            for j, audio_id in enumerate(audio_ids):
-                audio_docs.append({
-                    "_id": audio_id,
-                    "sentenceId": i,
-                    "questionId": 0,
-                    "vtt": "The quick brown fox jumps over the lazy dog.",
-                    "gentleVtt": "This is a dummy VTT.",
-                    "version": flask_app.config["VERSION"],
-                    "score": {
-                        "wer": j + 1,
-                        "mer": j + 1,
-                        "wil": j + 1
-                    }
-                })
-
             test_audio_docs.append(audio_docs[0])
             random.shuffle(audio_docs)
             audio_results = mongodb.Audio.insert_many(audio_docs)
@@ -124,17 +151,26 @@ class TestGetRec:
         yield test_audio_docs
         mongodb.Audio.delete_many({"_id": {"$in": inserted_audio_ids}})
         mongodb.RecordedQuestions.delete_many({"_id": {"$in": inserted_question_ids}})
+        mongodb.Users.delete_many({"_id": {"$in": user_ids}})
 
     # Test Case: No difficulty specified
-    def test_any(self, client, doc_setup):
-        required_response_fields = ["_id", "vtt", "gentleVtt", "questionId", "sentenceId"]
+    def test_any(self, path_op_pair, client, mongodb, doc_setup, api_spec):
         response = client.get(self.ROUTE)
         response_body = response.get_json()
-        assert match_status(HTTPStatus.OK, response.status)
-        for doc in response_body["results"]:
-            for field in required_response_fields:
-                assert field in doc
-            assert doc_setup[doc["sentenceId"]]["_id"] == doc["_id"]
+        assert testutil.match_status(HTTPStatus.OK, response.status)
+        op_content = api_spec.api["paths"][path_op_pair[0]][path_op_pair[1]]
+        schema = op_content["responses"][str(int(HTTPStatus.OK))]["content"]["application/json"]["schema"]
+        validate(response_body, api_spec.build_schema(schema))
+        for question in response_body["results"]:
+            expected_uid = None
+            for audio in question["audio"]:
+                doc = mongodb.Audio.find_one({"_id": audio["id"]})
+                uid = doc["userId"]
+                if not expected_uid:
+                    expected_uid = uid
+                else:
+                    assert expected_uid == uid
+
 
 
 @pytest.mark.usefixtures("client", "flask_app", "mongodb")
@@ -284,7 +320,7 @@ class TestGetTranscript:
     def test_any(self, client, questions):
         required_response_fields = ["id", "sentenceId", "transcript"]
         response = client.get(self.ROUTE)
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
         assert "results" in response_body and len(response_body["results"]) > 0
         doc = response_body["results"][0]
@@ -313,7 +349,7 @@ class TestGetTranscript:
                 lower = difficulty_limits[j - 1] + 1 if j > 0 else None
                 upper = limit
                 response = client.get(self.ROUTE, query_string={"difficultyType": j})
-                assert match_status(HTTPStatus.OK, response.status)
+                assert testutil.match_status(HTTPStatus.OK, response.status)
                 response_body = response.get_json()
                 assert "results" in response_body and len(response_body["results"]) > 0
                 doc = response_body["results"][0]
@@ -342,7 +378,7 @@ class TestGetTranscript:
     def test_batch(self, client, questions):
         required_response_fields = ["id", "sentenceId", "transcript"]
         response = client.get(self.ROUTE, query_string={"batchSize": self.BATCH_SIZE})
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
         assert "results" in response_body
         assert len(response_body["results"]) == self.BATCH_SIZE
@@ -353,7 +389,7 @@ class TestGetTranscript:
     # Test Case: Attempting to get a batch of documents larger than the size of the collection
     def test_batch_lesser(self, client, questions):
         response = client.get(self.ROUTE, query_string={"batchSize": len(questions) + 1})
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
         assert "results" in response_body
         assert len(response_body["results"]) <= len(questions)
@@ -380,7 +416,7 @@ class TestGetTranscript:
                 lower = difficulty_limits[j - 1] + 1 if j > 0 else None
                 upper = limit
                 response = client.get(self.ROUTE, query_string={"difficultyType": j, "batchSize": self.BATCH_SIZE})
-                assert match_status(HTTPStatus.OK, response.status)
+                assert testutil.match_status(HTTPStatus.OK, response.status)
                 response_body = response.get_json()
                 assert "results" in response_body and len(response_body["results"]) > 0
                 for doc in response_body["results"]:
@@ -417,7 +453,7 @@ class TestGetTranscript:
             for i in range(len(difficulty_limits)):
                 attempts = 0
                 response = client.get(self.ROUTE, query_string={"batchSize": self.BATCH_SIZE, "difficultyType": i})
-                assert match_status(HTTPStatus.OK, response.status)
+                assert testutil.match_status(HTTPStatus.OK, response.status)
                 previous_response_body = response.get_json()
                 assert "results" in previous_response_body and len(previous_response_body["results"]) > 0
 
@@ -445,7 +481,7 @@ class TestGetUnprocAudio:
     def rec_question(self, mongodb):
         question_result = mongodb.RecordedQuestions.insert_one({
             "transcript": "Foo",
-            "recordings": [generate_audio_id()]
+            "recordings": [testutil.generate_audio_id()]
         })
         yield question_result.inserted_id
         mongodb.RecordedQuestions.delete_one({"_id": question_result.inserted_id})
@@ -454,11 +490,11 @@ class TestGetUnprocAudio:
     def doc_setup_normal(self, mongodb, unrec_question, rec_question):
         audio_docs = [
             {
-                "_id": generate_audio_id(),
+                "_id": testutil.generate_audio_id(),
                 "questionId": unrec_question
             },
             {
-                "_id": generate_audio_id(),
+                "_id": testutil.generate_audio_id(),
                 "questionId": rec_question
             }
         ]
@@ -469,7 +505,7 @@ class TestGetUnprocAudio:
     @pytest.fixture
     def doc_setup_admin(self, mongodb, unrec_question):
         audio_result = mongodb.UnprocessedAudio.insert_one({
-            "_id": generate_audio_id(),
+            "_id": testutil.generate_audio_id(),
             "questionId": unrec_question,
             "diarMetadata": "detect_num_speakers=False, max_num_speakers=3"
         })
@@ -481,7 +517,7 @@ class TestGetUnprocAudio:
         required_doc_fields = ["_id", "transcript"]
         response = client.get(self.ROUTE)
         response_body = response.get_json()
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         assert "results" in response_body
         for doc in response_body.get("results"):
             for field in required_doc_fields:
@@ -492,7 +528,7 @@ class TestGetUnprocAudio:
         required_doc_fields = ["_id", "transcript", "diarMetadata"]
         response = client.get(self.ROUTE)
         response_body = response.get_json()
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         assert "results" in response_body
         for doc in response_body.get("results"):
             for field in required_doc_fields:
@@ -523,7 +559,7 @@ class TestProcessAudio:
     @pytest.fixture
     def unproc_audio_document(self, mongodb, unrec_question, user, flask_app):
         audio_doc = {
-            "_id": generate_audio_id(),
+            "_id": testutil.generate_audio_id(),
             "questionId": unrec_question["_id"],
             "userId": user["_id"],
             "gentleVtt": "Foo",
@@ -645,7 +681,7 @@ class TestUploadRec:
     def test_success(self, client, mongodb, exact_data, upload_cleanup, user_id):
         doc_required_fields = ["gentleVtt", "questionId", "userId", "recType"]
         response = client.post(self.ROUTE, data=exact_data, content_type=self.CONTENT_TYPE)
-        assert match_status(HTTPStatus.ACCEPTED, response.status)
+        assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
         assert response_body.get("prescreenSuccessful")
         audio_doc = mongodb.UnprocessedAudio.find_one()
@@ -655,7 +691,7 @@ class TestUploadRec:
     # Test Case: Submitting a recording with audio distorted by environmental noise.
     def test_bad_env(self, client, mongodb, bad_env_data, upload_cleanup, user_id):
         response = client.post(self.ROUTE, data=bad_env_data, content_type=self.CONTENT_TYPE)
-        assert match_status(HTTPStatus.ACCEPTED, response.status)
+        assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
         logger.debug(f"response_body = {response_body}")
         assert response_body.get("prescreenSuccessful")
@@ -664,7 +700,7 @@ class TestUploadRec:
     # Source: https://en.wikipedia.org/wiki/Lorem_ipsum
     def test_mismatch(self, client, mongodb, mismatch_data, upload_cleanup, user_id):
         response = client.post(self.ROUTE, data=mismatch_data, content_type=self.CONTENT_TYPE)
-        assert match_status(HTTPStatus.ACCEPTED, response.status)
+        assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
         logger.debug(f"response_body = {response_body}")
         assert not response_body.get("prescreenSuccessful")
@@ -674,7 +710,7 @@ class TestUploadRec:
         doc_required_fields = ["gentleVtt", "questionId", "userId", "recType", "diarMetadata"]
         response = client.post(self.ROUTE, data=admin_data, content_type=self.CONTENT_TYPE)
         response_body = response.get_json()
-        assert match_status(HTTPStatus.ACCEPTED, response.status)
+        assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         assert response_body.get("prescreenSuccessful")
         logger.debug(f"response_body = {response_body}")
         audio_doc = mongodb.UnprocessedAudio.find_one()
@@ -689,7 +725,7 @@ class TestUploadRec:
         response = client.post(self.ROUTE, data=buzz_data, content_type=self.CONTENT_TYPE)
         response_body = response.get_json()
         logger.debug(f"response_body = {response_body}")
-        assert match_status(HTTPStatus.ACCEPTED, response.status)
+        assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         assert response_body.get("prescreenSuccessful")
 
         audio_doc = mongodb.Audio.find_one()
@@ -727,8 +763,7 @@ class TestOwnProfile:
 
     @pytest.fixture
     def user_profile(self, mongodb, api_spec, dev_uid):
-        user_schema = api_spec["components"]["schemas"]["User"]
-        profile = deepcopy(user_schema["examples"][0])
+        profile = api_spec.get_schema_stub("User")
         profile["_id"] = dev_uid
         result = mongodb.Users.insert_one(profile)
         yield profile
@@ -736,7 +771,7 @@ class TestOwnProfile:
 
     def test_create(self, client, mongodb, profile_args, dev_uid, api_spec):
         response = client.post(self.ROUTE, json=profile_args)
-        assert match_status(HTTPStatus.CREATED, response.status)
+        assert testutil.match_status(HTTPStatus.CREATED, response.status)
         profile = mongodb.Users.find_one({"_id": dev_uid})
         assert profile
         validate(profile, api_spec.get_schema("User", resolve_references=True))
@@ -756,7 +791,7 @@ class TestOwnProfile:
             "permLevel"
         ]
         response = client.get(self.ROUTE)
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         profile = response.get_json()
         assert profile
         for field in required_fields:
@@ -764,14 +799,14 @@ class TestOwnProfile:
 
     def test_update(self, client, mongodb, user_profile, profile_update_args):
         response = client.patch(self.ROUTE, json=profile_update_args)
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         new_profile = {**user_profile, **profile_update_args}  # Merge two dictionaries without modifying either one.
         other_profile = mongodb.Users.find_one({"_id": new_profile["_id"]})
         assert new_profile == other_profile
 
     def test_delete(self, client, mongodb, user_profile):
         response = client.delete(self.ROUTE)
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         assert not mongodb.Users.find_one({"_id": user_profile["_id"]})
 
 
@@ -820,7 +855,7 @@ class TestOtherProfile:
     def test_get(self, client, other_profile, api_spec):
         full_route = "/".join([self.ROUTE, other_profile["username"]])
         response = client.get(full_route)
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         profile = response.get_json()
         for field in profile:
             assert field in other_profile
@@ -829,7 +864,7 @@ class TestOtherProfile:
     def test_update(self, client, mongodb, admin_profile, other_profile, profile_update_args):
         full_route = "/".join([self.ROUTE, other_profile["username"]])
         response = client.patch(full_route, json=profile_update_args)
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         new_profile = {**other_profile, **profile_update_args}  # Merge two dictionaries without modifying either one.
         actual_profile = mongodb.Users.find_one({"_id": new_profile["_id"]})
         assert new_profile == actual_profile
@@ -837,5 +872,5 @@ class TestOtherProfile:
     def test_delete(self, client, mongodb, admin_profile, other_profile):
         full_route = "/".join([self.ROUTE, other_profile["username"]])
         response = client.delete(full_route)
-        assert match_status(HTTPStatus.OK, response.status)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
         assert not mongodb.Users.find_one({"_id": other_profile["_id"]})
