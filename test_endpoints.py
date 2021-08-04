@@ -1,14 +1,16 @@
 import os
 import random
+from copy import deepcopy
 from datetime import datetime
 from http import HTTPStatus
+import logging
 
 import bson
 import pytest
+from openapi_schema_validator import validate
 
 import conftest
 from testutil import match_status, generate_audio_id
-import logging
 
 logger = logging.getLogger(__name__)
 # For testing cases that the server is designed to handle on a regular basis.
@@ -566,7 +568,7 @@ class TestProcessAudio:
         assert recording["recType"] == "normal"
 
 
-@pytest.mark.usefixtures("client", "mongodb", "firebase_bucket", "input_dir")
+@pytest.mark.usefixtures("client", "mongodb", "firebase_bucket", "input_dir", "dev_uid")
 class TestUploadRec:
     ROUTE = "/audio"
     CONTENT_TYPE = "multipart/form-data"
@@ -582,8 +584,8 @@ class TestUploadRec:
         mongodb.UnrecordedQuestions.delete_one({"_id": question_result.inserted_id})
 
     @pytest.fixture
-    def user_id(self, mongodb):
-        user_result = mongodb.Users.insert_one({"recordedAudios": []})
+    def user_id(self, mongodb, dev_uid):
+        user_result = mongodb.Users.insert_one({"_id": dev_uid, "recordedAudios": []})
         yield user_result.inserted_id
         mongodb.Users.delete_one({"_id": user_result.inserted_id})
 
@@ -700,3 +702,140 @@ class TestUploadRec:
         rec = user_doc["recordedAudios"][0]
         assert rec["id"] == audio_doc["_id"]
         assert rec["recType"] == "buzz"
+
+
+@pytest.mark.usefixtures("client", "mongodb", "api_spec", "dev_uid")
+class TestOwnProfile:
+    ROUTE = "/profile"
+
+    @pytest.fixture
+    def profile_args(self, mongodb):
+        in_profile = {
+            "pfp": [1, 2, 3],
+            "username": "Foo"
+        }
+        yield in_profile
+        mongodb.Users.delete_one(in_profile)
+
+    @pytest.fixture
+    def profile_update_args(self):
+        return {
+            "pfp": [4, 5, 6],
+            "username": "Bar",
+            "usernameSpecs": "colored"
+        }
+
+    @pytest.fixture
+    def user_profile(self, mongodb, api_spec, dev_uid):
+        user_schema = api_spec["components"]["schemas"]["User"]
+        profile = deepcopy(user_schema["examples"][0])
+        profile["_id"] = dev_uid
+        result = mongodb.Users.insert_one(profile)
+        yield profile
+        mongodb.Users.delete_one({"_id": result.inserted_id})
+
+    def test_create(self, client, mongodb, profile_args, dev_uid, api_spec):
+        response = client.post(self.ROUTE, json=profile_args)
+        assert match_status(HTTPStatus.CREATED, response.status)
+        profile = mongodb.Users.find_one({"_id": dev_uid})
+        assert profile
+        validate(profile, api_spec.get_schema("User", resolve_references=True))
+
+    def test_get(self, client, user_profile):
+        required_fields = [
+            "pfp",
+            "username",
+            "usernameSpecs",
+            "rating",
+            "totalQuestionsPlayed",
+            "totalGames",
+            "coins",
+            "coinsCumulative",
+            "activityOverview",
+            "recordedAudios",
+            "permLevel"
+        ]
+        response = client.get(self.ROUTE)
+        assert match_status(HTTPStatus.OK, response.status)
+        profile = response.get_json()
+        assert profile
+        for field in required_fields:
+            assert field in profile
+
+    def test_update(self, client, mongodb, user_profile, profile_update_args):
+        response = client.patch(self.ROUTE, json=profile_update_args)
+        assert match_status(HTTPStatus.OK, response.status)
+        new_profile = {**user_profile, **profile_update_args}  # Merge two dictionaries without modifying either one.
+        other_profile = mongodb.Users.find_one({"_id": new_profile["_id"]})
+        assert new_profile == other_profile
+
+    def test_delete(self, client, mongodb, user_profile):
+        response = client.delete(self.ROUTE)
+        assert match_status(HTTPStatus.OK, response.status)
+        assert not mongodb.Users.find_one({"_id": user_profile["_id"]})
+
+
+@pytest.mark.usefixtures("client", "mongodb", "api_spec", "dev_uid")
+class TestOtherProfile:
+    ROUTE = "/profile"
+
+    @pytest.fixture
+    def profile_args(self, mongodb):
+        in_profile = {
+            "pfp": [1, 2, 3],
+            "username": "Foo"
+        }
+        yield in_profile
+        mongodb.Users.delete_one(in_profile)
+
+    @pytest.fixture
+    def profile_update_args(self):
+        return {
+            "pfp": [4, 5, 6],
+            "username": "Bar",
+            "usernameSpecs": "colored"
+        }
+
+    @pytest.fixture
+    def admin_profile(self, mongodb, api_spec, dev_uid):
+        user_schema = api_spec["components"]["schemas"]["User"]
+        profile = deepcopy(user_schema["examples"][0])
+        profile.update({
+            "_id": dev_uid,
+            "username": "admin",
+            "permLevel": "admin"
+        })
+        result = mongodb.Users.insert_one(profile)
+        yield profile
+        mongodb.Users.delete_one({"_id": result.inserted_id})
+
+    @pytest.fixture
+    def other_profile(self, mongodb, api_spec, dev_uid):
+        user_schema = api_spec["components"]["schemas"]["User"]
+        profile = user_schema["examples"][0]
+        result = mongodb.Users.insert_one(profile)
+        yield profile
+        mongodb.Users.delete_one({"_id": result.inserted_id})
+
+    def test_get(self, client, other_profile, api_spec):
+        full_route = "/".join([self.ROUTE, other_profile["username"]])
+        response = client.get(full_route)
+        assert match_status(HTTPStatus.OK, response.status)
+        profile = response.get_json()
+        for field in profile:
+            assert field in other_profile
+            assert profile[field] == other_profile[field]
+
+    def test_update(self, client, mongodb, admin_profile, other_profile, profile_update_args):
+        full_route = "/".join([self.ROUTE, other_profile["username"]])
+        response = client.patch(full_route, json=profile_update_args)
+        assert match_status(HTTPStatus.OK, response.status)
+        new_profile = {**other_profile, **profile_update_args}  # Merge two dictionaries without modifying either one.
+        actual_profile = mongodb.Users.find_one({"_id": new_profile["_id"]})
+        assert new_profile == actual_profile
+
+    def test_delete(self, client, mongodb, admin_profile, other_profile):
+        full_route = "/".join([self.ROUTE, other_profile["username"]])
+        response = client.delete(full_route)
+        assert match_status(HTTPStatus.OK, response.status)
+        assert not mongodb.Users.find_one({"_id": other_profile["_id"]})

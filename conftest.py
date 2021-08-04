@@ -3,10 +3,10 @@ import secrets
 
 import pymongo
 import pytest
-import yaml
 from firebase_admin import storage
 
 from server import create_app
+from sv_api import QuizzrAPISpec
 
 
 DIFFICULTY_LIMITS = [3, 6, None]
@@ -15,6 +15,11 @@ DIFFICULTY_LIMITS = [3, 6, None]
 @pytest.fixture(scope="session")
 def db_name():
     return "QuizzrDatabaseTest"
+
+
+@pytest.fixture(scope="session")
+def dev_uid():
+    return "dev"
 
 
 @pytest.fixture(scope="session")
@@ -33,15 +38,8 @@ def input_dir():
 
 
 @pytest.fixture(scope="session")
-def api_doc_path(qs_dir):
-    return os.path.join(qs_dir, "api", "backend.yaml")
-
-
-@pytest.fixture(scope="session")
-def server_api_doc(api_doc_path):
-    with open(api_doc_path) as api_f:
-        api = yaml.load(api_f.read(), Loader=yaml.FullLoader)
-    return api
+def api_spec(qs_dir):
+    return QuizzrAPISpec(os.path.join(qs_dir, "reference", "backend.yaml"))
 
 
 @pytest.fixture(scope="session")
@@ -57,13 +55,15 @@ def mongodb_client():
 
 
 @pytest.fixture(scope="session")
-def flask_app(blob_root_name, db_name):
+def flask_app(blob_root_name, db_name, dev_uid):
     app = create_app({
         "Q_ENV": "testing",
         "DATABASE": db_name,
         "BLOB_ROOT": blob_root_name,
         "DIFFICULTY_LIMITS": DIFFICULTY_LIMITS,
-        "TESTING": True
+        "DEV_UID": dev_uid,
+        "TESTING": True,
+        "USE_ID_TOKENS": False
     })
     return app
 
