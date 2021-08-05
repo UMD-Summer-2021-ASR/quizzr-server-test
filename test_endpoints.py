@@ -658,7 +658,7 @@ class TestOwnProfile:
 
     @pytest.fixture
     def user_profile(self, mongodb, api_spec, dev_uid):
-        user_schema = api_spec["components"]["schemas"]["User"]
+        user_schema = api_spec.api["components"]["schemas"]["User"]
         profile = deepcopy(user_schema["examples"][0])
         profile["_id"] = dev_uid
         result = mongodb.Users.insert_one(profile)
@@ -729,7 +729,7 @@ class TestOtherProfile:
 
     @pytest.fixture
     def admin_profile(self, mongodb, api_spec, dev_uid):
-        user_schema = api_spec["components"]["schemas"]["User"]
+        user_schema = api_spec.api["components"]["schemas"]["User"]
         profile = deepcopy(user_schema["examples"][0])
         profile.update({
             "_id": dev_uid,
@@ -742,7 +742,7 @@ class TestOtherProfile:
 
     @pytest.fixture
     def other_profile(self, mongodb, api_spec, dev_uid):
-        user_schema = api_spec["components"]["schemas"]["User"]
+        user_schema = api_spec.api["components"]["schemas"]["User"]
         profile = user_schema["examples"][0]
         result = mongodb.Users.insert_one(profile)
         yield profile
