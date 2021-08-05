@@ -582,6 +582,8 @@ class TestProcessAudio:
 class TestUploadRec:
     ROUTE = "/audio"
     CONTENT_TYPE = "multipart/form-data"
+    DEFAULT_QID = 0
+    DEFAULT_SID = 0
 
     @pytest.fixture
     def unrec_qid(self, input_dir, mongodb):
@@ -589,9 +591,29 @@ class TestUploadRec:
         assert os.path.exists(transcript_path)
         with open(transcript_path, "r") as f:
             transcript = f.read()
-        question_result = mongodb.UnrecordedQuestions.insert_one({"transcript": transcript})
-        yield question_result.inserted_id
+        question_result = mongodb.UnrecordedQuestions.insert_one({
+            "transcript": transcript,
+            "qb_id": self.DEFAULT_QID,
+            "sentenceId": self.DEFAULT_SID
+        })
+        yield
         mongodb.UnrecordedQuestions.delete_one({"_id": question_result.inserted_id})
+
+    @pytest.fixture
+    def unrec_sentence_ids(self, input_dir, mongodb):
+        transcript_path = os.path.join(input_dir, "segmented", "transcript.txt")
+        assert os.path.exists(transcript_path)
+        with open(transcript_path, "r") as f:
+            transcript_text = f.read()
+        transcripts = transcript_text.strip().split("\n")
+        sentence_docs = []
+        sentence_ids = []
+        for i, t in enumerate(transcripts):
+            sentence_docs.append({"transcript": t, "sentenceId": i, "qb_id": self.DEFAULT_QID})
+            sentence_ids.append(i)
+        results = mongodb.UnrecordedQuestions.insert_many(sentence_docs)
+        yield sentence_ids
+        mongodb.UnrecordedQuestions.delete_many({"_id": {"$in": results.inserted_ids}})
 
     @pytest.fixture
     def user_id(self, mongodb, dev_uid):
@@ -618,7 +640,7 @@ class TestUploadRec:
         audio_path = os.path.join(input_dir, "exact.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
-        yield {"qid": unrec_qid, "audio": audio, "recType": "normal"}
+        yield {"qb_id": self.DEFAULT_QID, "sentenceId": self.DEFAULT_SID, "audio": audio, "recType": "normal"}
         audio.close()
 
     @pytest.fixture
@@ -626,7 +648,7 @@ class TestUploadRec:
         audio_path = os.path.join(input_dir, "mismatch.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
-        yield {"qid": unrec_qid, "audio": audio, "recType": "normal"}
+        yield {"qb_id": self.DEFAULT_QID, "sentenceId": self.DEFAULT_SID, "audio": audio, "recType": "normal"}
         audio.close()
 
     @pytest.fixture
@@ -634,7 +656,7 @@ class TestUploadRec:
         audio_path = os.path.join(input_dir, "bad_env.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
-        yield {"qid": unrec_qid, "audio": audio, "recType": "normal"}
+        yield {"qb_id": self.DEFAULT_QID, "sentenceId": self.DEFAULT_SID, "audio": audio, "recType": "normal"}
         audio.close()
 
     @pytest.fixture
@@ -656,12 +678,26 @@ class TestUploadRec:
         audio_path = os.path.join(input_dir, "answer.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
-        yield {"audio": audio, "recType": "answer", "qid": unrec_qid}
+        yield {"audio": audio, "recType": "answer", "qb_id": self.DEFAULT_QID}
         audio.close()
+
+    @pytest.fixture
+    def segmented_data(self, input_dir, unrec_sentence_ids):
+        data = {"audio": [], "recType": [], "qb_id": [], "sentenceId": []}
+        for i in unrec_sentence_ids:
+            audio_path = os.path.join(input_dir, "segmented", f"{i}.wav")
+            assert os.path.exists(audio_path)
+            data["audio"].append(open(audio_path, "rb"))
+            data["recType"].append("normal")
+            data["qb_id"].append(self.DEFAULT_QID)
+            data["sentenceId"].append(i)
+        yield data
+        for f in data["audio"]:
+            f.close()
 
     # Test Case: Submitting a recording that should be guaranteed to pass the pre-screening.
     def test_success(self, client, mongodb, exact_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "questionId", "userId", "recType"]
+        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType"]
         response = client.post(self.ROUTE, data=exact_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
@@ -740,6 +776,18 @@ class TestUploadRec:
         rec = user_doc["recordedAudios"][0]
         assert rec["id"] == audio_doc["_id"]
         assert rec["recType"] == "answer"
+
+    # Test Case: Submitting a segmented question.
+    def test_segmented(self, mongodb, client, segmented_data, upload_cleanup, user_id):
+        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType"]
+        response = client.post(self.ROUTE, data=segmented_data, content_type=self.CONTENT_TYPE)
+        assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
+        response_body = response.get_json()
+        assert response_body.get("prescreenSuccessful")
+        cursor = mongodb.UnprocessedAudio.find()
+        for audio_doc in cursor:
+            for field in doc_required_fields:
+                assert field in audio_doc
 
 
 @pytest.mark.usefixtures("client", "mongodb", "api_spec", "dev_uid")
