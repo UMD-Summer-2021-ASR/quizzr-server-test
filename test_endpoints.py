@@ -624,10 +624,10 @@ class TestUploadRec:
     @pytest.fixture
     def upload_cleanup(self, mongodb, firebase_bucket, flask_app):
         yield
-        audio_cursor = mongodb.UnprocessedAudio.find(None, {"_id": 1})
+        audio_cursor = mongodb.UnprocessedAudio.find(None, {"_id": 1, "recType": 1})
         for audio_doc in audio_cursor:
             fid = audio_doc["_id"]
-            firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], "normal", fid])).delete()
+            firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], audio_doc["recType"], fid])).delete()
         mongodb.UnprocessedAudio.delete_many({"_id": {"$exists": True}})
         audio_cursor = mongodb.Audio.find(None, {"_id": 1, "recType": 1})
         for audio_doc in audio_cursor:
@@ -759,7 +759,7 @@ class TestUploadRec:
 
     # Test Case: Submitting a recording for an answer.
     def test_answer(self, mongodb, client, answer_data, upload_cleanup, user_id):
-        doc_required_fields = ["userId", "recType"]
+        doc_required_fields = ["userId", "recType", "questionId"]
         response = client.post(self.ROUTE, data=answer_data, content_type=self.CONTENT_TYPE)
         response_body = response.get_json()
         logger.debug(f"response_body = {response_body}")
@@ -883,7 +883,7 @@ class TestOtherProfile:
 
     @pytest.fixture
     def admin_profile(self, mongodb, api_spec, dev_uid):
-        user_schema = api_spec["components"]["schemas"]["User"]
+        user_schema = api_spec.api["components"]["schemas"]["User"]
         profile = deepcopy(user_schema["examples"][0])
         profile.update({
             "_id": dev_uid,
@@ -896,7 +896,7 @@ class TestOtherProfile:
 
     @pytest.fixture
     def other_profile(self, mongodb, api_spec, dev_uid):
-        user_schema = api_spec["components"]["schemas"]["User"]
+        user_schema = api_spec.api["components"]["schemas"]["User"]
         profile = user_schema["examples"][0]
         result = mongodb.Users.insert_one(profile)
         yield profile
