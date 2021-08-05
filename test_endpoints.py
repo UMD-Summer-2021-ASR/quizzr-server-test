@@ -523,19 +523,19 @@ class TestUploadRec:
     @pytest.fixture
     def upload_cleanup(self, mongodb, firebase_bucket, flask_app):
         yield
-        audio_cursor = mongodb.UnprocessedAudio.find(None, {"_id": 1})
+        audio_cursor = mongodb.UnprocessedAudio.find(None, {"_id": 1, "recType": 1})
         for audio_doc in audio_cursor:
             fid = audio_doc["_id"]
-            firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], "normal", fid])).delete()
+            firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], audio_doc["recType"], fid])).delete()
         mongodb.UnprocessedAudio.delete_many({"_id": {"$exists": True}})
-        audio_cursor = mongodb.Audio.find(None, {"_id": 1})
+        audio_cursor = mongodb.Audio.find(None, {"_id": 1, "recType": 1})
         for audio_doc in audio_cursor:
             fid = audio_doc["_id"]
-            firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], "buzz", fid])).delete()
+            firebase_bucket.blob("/".join([flask_app.config["BLOB_ROOT"], audio_doc["recType"], fid])).delete()
         mongodb.Audio.delete_many({"_id": {"$exists": True}})
 
     @pytest.fixture
-    def exact_data(self, mongodb, input_dir, unrec_qid):
+    def exact_data(self, input_dir, unrec_qid):
         audio_path = os.path.join(input_dir, "exact.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
@@ -543,7 +543,7 @@ class TestUploadRec:
         audio.close()
 
     @pytest.fixture
-    def mismatch_data(self, mongodb, input_dir, unrec_qid):
+    def mismatch_data(self, input_dir, unrec_qid):
         audio_path = os.path.join(input_dir, "mismatch.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
@@ -551,7 +551,7 @@ class TestUploadRec:
         audio.close()
 
     @pytest.fixture
-    def bad_env_data(self, mongodb, input_dir, unrec_qid):
+    def bad_env_data(self, input_dir, unrec_qid):
         audio_path = os.path.join(input_dir, "bad_env.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
@@ -565,11 +565,19 @@ class TestUploadRec:
         return data
 
     @pytest.fixture
-    def buzz_data(self, mongodb, input_dir):
+    def buzz_data(self, input_dir):
         audio_path = os.path.join(input_dir, "buzz.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
         yield {"audio": audio, "recType": "buzz"}
+        audio.close()
+
+    @pytest.fixture
+    def answer_data(self, input_dir, unrec_qid):
+        audio_path = os.path.join(input_dir, "answer.wav")
+        assert os.path.exists(audio_path)
+        audio = open(audio_path, "rb")
+        yield {"audio": audio, "recType": "answer", "qid": unrec_qid}
         audio.close()
 
     # Test Case: Submitting a recording that should be guaranteed to pass the pre-screening.
@@ -633,6 +641,26 @@ class TestUploadRec:
         rec = user_doc["recordedAudios"][0]
         assert rec["id"] == audio_doc["_id"]
         assert rec["recType"] == "buzz"
+
+    # Test Case: Submitting a recording for an answer.
+    def test_answer(self, mongodb, client, answer_data, upload_cleanup, user_id):
+        doc_required_fields = ["userId", "recType", "questionId"]
+        response = client.post(self.ROUTE, data=answer_data, content_type=self.CONTENT_TYPE)
+        response_body = response.get_json()
+        logger.debug(f"response_body = {response_body}")
+        assert match_status(HTTPStatus.ACCEPTED, response.status)
+        assert response_body.get("prescreenSuccessful")
+
+        audio_doc = mongodb.Audio.find_one()
+        assert audio_doc
+        for field in doc_required_fields:
+            assert field in audio_doc
+        assert audio_doc["recType"] == "answer"
+
+        user_doc = mongodb.Users.find_one({"_id": user_id})
+        rec = user_doc["recordedAudios"][0]
+        assert rec["id"] == audio_doc["_id"]
+        assert rec["recType"] == "answer"
 
 
 @pytest.mark.usefixtures("client", "mongodb", "api_spec", "dev_uid")
