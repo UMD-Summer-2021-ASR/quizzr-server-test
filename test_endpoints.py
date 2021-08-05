@@ -683,17 +683,36 @@ class TestUploadRec:
 
     @pytest.fixture
     def segmented_data(self, input_dir, unrec_sentence_ids):
+        data = self.get_segmented_data(input_dir, unrec_sentence_ids, "exact")
+        yield data
+        for f in data["audio"]:
+            f.close()
+
+    @pytest.fixture
+    def segmented_mismatch_data(self, input_dir, unrec_sentence_ids):
+        data = self.get_segmented_data(input_dir, unrec_sentence_ids, "mismatch")
+        yield data
+        for f in data["audio"]:
+            f.close()
+
+    @pytest.fixture
+    def segmented_partial_mismatch_data(self, input_dir, unrec_sentence_ids):
+        data = self.get_segmented_data(input_dir, unrec_sentence_ids, "partial_mismatch")
+        yield data
+        for f in data["audio"]:
+            f.close()
+
+    def get_segmented_data(self, input_dir, unrec_sentence_ids, subdir_name):
+        """Get the form arguments for a batch of audio files based on segmented questions."""
         data = {"audio": [], "recType": [], "qb_id": [], "sentenceId": []}
         for i in unrec_sentence_ids:
-            audio_path = os.path.join(input_dir, "segmented", f"{i}.wav")
+            audio_path = os.path.join(input_dir, "segmented", subdir_name, f"{i}.wav")
             assert os.path.exists(audio_path)
             data["audio"].append(open(audio_path, "rb"))
             data["recType"].append("normal")
             data["qb_id"].append(self.DEFAULT_QID)
             data["sentenceId"].append(i)
-        yield data
-        for f in data["audio"]:
-            f.close()
+        return data
 
     # Test Case: Submitting a recording that should be guaranteed to pass the pre-screening.
     def test_success(self, client, mongodb, exact_data, upload_cleanup, user_id):
@@ -725,7 +744,7 @@ class TestUploadRec:
 
     # Test Case: Submitting a recording as an administrator.
     def test_admin(self, mongodb, client, admin_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "questionId", "userId", "recType", "diarMetadata"]
+        doc_required_fields = ["gentleVtt", "qb_id", "userId", "recType", "diarMetadata"]
         response = client.post(self.ROUTE, data=admin_data, content_type=self.CONTENT_TYPE)
         response_body = response.get_json()
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
@@ -759,7 +778,7 @@ class TestUploadRec:
 
     # Test Case: Submitting a recording for an answer.
     def test_answer(self, mongodb, client, answer_data, upload_cleanup, user_id):
-        doc_required_fields = ["userId", "recType", "questionId"]
+        doc_required_fields = ["userId", "recType", "qb_id"]
         response = client.post(self.ROUTE, data=answer_data, content_type=self.CONTENT_TYPE)
         response_body = response.get_json()
         logger.debug(f"response_body = {response_body}")
@@ -781,6 +800,24 @@ class TestUploadRec:
     def test_segmented(self, mongodb, client, segmented_data, upload_cleanup, user_id):
         doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType"]
         response = client.post(self.ROUTE, data=segmented_data, content_type=self.CONTENT_TYPE)
+        assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
+        response_body = response.get_json()
+        assert response_body.get("prescreenSuccessful")
+        cursor = mongodb.UnprocessedAudio.find()
+        for audio_doc in cursor:
+            for field in doc_required_fields:
+                assert field in audio_doc
+
+    def test_segmented_mismatch(self, mongodb, client, segmented_mismatch_data, upload_cleanup, user_id):
+        response = client.post(self.ROUTE, data=segmented_mismatch_data, content_type=self.CONTENT_TYPE)
+        assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
+        response_body = response.get_json()
+        assert not response_body.get("prescreenSuccessful")
+
+    @pytest.mark.xfail
+    def test_segmented_partial_mismatch(self, mongodb, client, segmented_partial_mismatch_data, upload_cleanup, user_id):
+        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType"]
+        response = client.post(self.ROUTE, data=segmented_partial_mismatch_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
         assert response_body.get("prescreenSuccessful")
