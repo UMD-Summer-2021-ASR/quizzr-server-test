@@ -9,6 +9,9 @@ from server import create_app
 from sv_api import QuizzrAPISpec
 
 
+DIFFICULTY_LIMITS = [3, 6, None]
+
+
 @pytest.fixture(scope="session")
 def db_name():
     return "QuizzrDatabaseTest"
@@ -57,7 +60,7 @@ def flask_app(blob_root_name, db_name, dev_uid):
         "Q_ENV": "testing",
         "DATABASE": db_name,
         "BLOB_ROOT": blob_root_name,
-        "DIFFICULTY_LIMITS": [3, 6, None],
+        "DIFFICULTY_LIMITS": DIFFICULTY_LIMITS,
         "DEV_UID": dev_uid,
         "TESTING": True,
         "USE_ID_TOKENS": False
