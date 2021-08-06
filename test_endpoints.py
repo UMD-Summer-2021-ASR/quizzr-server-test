@@ -88,6 +88,46 @@ class TestGetRec:
     @pytest.fixture
     def doc_setup(self, mongodb, flask_app):
         num_docs = 5
+        user_id = testutil.generate_uid()
+        mongodb.Users.insert_one({"_id": user_id, "recordedAudios": []})
+        audio_ids = []
+        audio_docs = []
+        for i in range(num_docs):
+            audio_id = testutil.generate_audio_id()
+            audio_ids.append(audio_id)
+            audio_docs.append({
+                "_id": audio_id,
+                "qb_id": 0,
+                "vtt": "The quick brown fox jumps over the lazy dog.",
+                "gentleVtt": "This is a dummy VTT.",
+                "version": flask_app.config["VERSION"],
+                "score": {
+                    "wer": i + 1,
+                    "mer": i + 1,
+                    "wil": i + 1
+                },
+                "userId": user_id
+            })
+
+        question_result = mongodb.RecordedQuestions.insert_one({
+            "qb_id": 0,
+            "transcript": str(bson.ObjectId()),
+            "recDifficulty": 0,
+            "answer": "Foo",
+            "recordings": [{"id": rec_id, "recType": "normal"} for rec_id in audio_ids]
+        })
+
+        test_audio_doc = audio_docs[0]
+        random.shuffle(audio_docs)
+        audio_results = mongodb.Audio.insert_many(audio_docs)
+        yield test_audio_doc
+        mongodb.Audio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
+        mongodb.RecordedQuestions.delete_one({"_id": question_result.inserted_id})
+        mongodb.Users.delete_one({"_id": user_id})
+
+    @pytest.fixture
+    def doc_setup_segmented(self, mongodb, flask_app):
+        num_docs = 5
         num_sentences = 5
         test_audio_docs = []
         inserted_audio_ids = []
@@ -153,8 +193,20 @@ class TestGetRec:
         mongodb.RecordedQuestions.delete_many({"_id": {"$in": inserted_question_ids}})
         mongodb.Users.delete_many({"_id": {"$in": user_ids}})
 
-    # Test Case: No difficulty specified
-    def test_any(self, path_op_pair, client, mongodb, doc_setup, api_spec):
+    # Test Case: Not segmented
+    def test_whole(self, path_op_pair, client, mongodb, doc_setup, api_spec):
+        response = client.get(self.ROUTE)
+        response_body = response.get_json()
+        assert testutil.match_status(HTTPStatus.OK, response.status)
+        op_content = api_spec.api["paths"][path_op_pair[0]][path_op_pair[1]]
+        schema = op_content["responses"][str(int(HTTPStatus.OK))]["content"]["application/json"]["schema"]
+        validate(response_body, api_spec.build_schema(schema))
+        question = response_body["results"][0]
+        audio = question["audio"][0]
+        doc = mongodb.Audio.find_one({"_id": audio["id"]})
+        assert doc == doc_setup
+
+    def test_segmented(self, path_op_pair, client, mongodb, doc_setup_segmented, api_spec):
         response = client.get(self.ROUTE)
         response_body = response.get_json()
         assert testutil.match_status(HTTPStatus.OK, response.status)
@@ -444,32 +496,69 @@ class TestGetTranscript:
 @pytest.mark.usefixtures("client", "mongodb")
 class TestGetUnprocAudio:
     ROUTE = "/audio"
+    NUM_SENTENCES = 5
 
     @pytest.fixture
     def unrec_question(self, mongodb):
-        question_result = mongodb.UnrecordedQuestions.insert_one({"transcript": "Foo"})
-        yield question_result.inserted_id
+        qb_id = 0
+        question_result = mongodb.UnrecordedQuestions.insert_one({"qb_id": qb_id, "transcript": "Foo"})
+        yield qb_id
         mongodb.UnrecordedQuestions.delete_one({"_id": question_result.inserted_id})
 
     @pytest.fixture
+    def unrec_question_segmented(self, mongodb):
+        qb_id = 0
+        question_docs = []
+        ids = []
+        for i in range(self.NUM_SENTENCES):
+            question_docs.append({
+                "qb_id": qb_id,
+                "sentenceId": i,
+                "transcript": str(bson.ObjectId())
+            })
+            ids.append((qb_id, i))
+        question_results = mongodb.UnrecordedQuestions.insert_many(question_docs)
+        yield ids
+        mongodb.UnrecordedQuestions.delete_many({"_id": {"$in": question_results.inserted_ids}})
+
+    @pytest.fixture
     def rec_question(self, mongodb):
+        qb_id = 1
         question_result = mongodb.RecordedQuestions.insert_one({
+            "qb_id": qb_id,
             "transcript": "Foo",
             "recordings": [testutil.generate_audio_id()]
         })
-        yield question_result.inserted_id
+        yield qb_id
         mongodb.RecordedQuestions.delete_one({"_id": question_result.inserted_id})
+
+    @pytest.fixture
+    def rec_question_segmented(self, mongodb):
+        qb_id = 1
+        question_docs = []
+        ids = []
+        for i in range(self.NUM_SENTENCES):
+            question_docs.append({
+                "qb_id": qb_id,
+                "sentenceId": i,
+                "transcript": str(bson.ObjectId()),
+                "recordings": [testutil.generate_audio_id()]
+            })
+            ids.append((qb_id, i))
+        question_results = mongodb.RecordedQuestions.insert_many(question_docs)
+        yield ids
+        mongodb.RecordedQuestions.delete_many({"_id": {"$in": question_results.inserted_ids}})
 
     @pytest.fixture
     def doc_setup_normal(self, mongodb, unrec_question, rec_question):
         audio_docs = [
             {
                 "_id": testutil.generate_audio_id(),
-                "questionId": unrec_question
+                "qb_id": unrec_question
             },
             {
                 "_id": testutil.generate_audio_id(),
-                "questionId": rec_question
+                "qb_id": rec_question
             }
         ]
         audio_results = mongodb.UnprocessedAudio.insert_many(audio_docs)
@@ -480,13 +569,32 @@ class TestGetUnprocAudio:
     def doc_setup_admin(self, mongodb, unrec_question):
         audio_result = mongodb.UnprocessedAudio.insert_one({
             "_id": testutil.generate_audio_id(),
-            "questionId": unrec_question,
+            "qb_id": unrec_question,
             "diarMetadata": "detect_num_speakers=False, max_num_speakers=3"
         })
         yield
         mongodb.UnprocessedAudio.delete_one({"_id": audio_result.inserted_id})
 
-    # Test Case: One audio document submitted by a normal user
+    @pytest.fixture
+    def doc_setup_segmented(self, mongodb, unrec_question_segmented, rec_question_segmented):
+        audio_docs = []
+        for qb_id, sentence_id in unrec_question_segmented:
+            audio_docs.append({
+                "_id": testutil.generate_audio_id(),
+                "qb_id": qb_id,
+                "sentenceId": sentence_id
+            })
+        for qb_id, sentence_id in rec_question_segmented:
+            audio_docs.append({
+                "_id": testutil.generate_audio_id(),
+                "qb_id": qb_id,
+                "sentenceId": sentence_id
+            })
+        audio_results = mongodb.UnprocessedAudio.insert_many(audio_docs)
+        yield
+        mongodb.UnprocessedAudio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
+
+    # Test Case: Two audio documents submitted by a normal user
     def test_normal(self, client, doc_setup_normal):
         required_doc_fields = ["_id", "transcript"]
         response = client.get(self.ROUTE)
@@ -508,6 +616,17 @@ class TestGetUnprocAudio:
             for field in required_doc_fields:
                 assert field in doc
 
+    # Test Case: One audio document submitted by a normal user
+    def test_segmented(self, client, doc_setup_segmented):
+        required_doc_fields = ["_id", "transcript"]
+        response = client.get(self.ROUTE)
+        response_body = response.get_json()
+        assert testutil.match_status(HTTPStatus.OK, response.status)
+        assert "results" in response_body
+        for doc in response_body.get("results"):
+            for field in required_doc_fields:
+                assert field in doc
+
 
 @pytest.mark.usefixtures("client", "mongodb")
 class TestProcessAudio:
@@ -515,26 +634,25 @@ class TestProcessAudio:
 
     @pytest.fixture
     def unrec_question(self, mongodb):
-        question_doc = {"transcript": "Foo"}
+        question_doc = {"transcript": "Foo", "qb_id": 0, "sentenceId": 0}
         result = mongodb.UnrecordedQuestions.insert_one(question_doc)
-        question_doc["_id"] = result.inserted_id
         yield question_doc
         mongodb.UnrecordedQuestions.delete_one({"_id": result.inserted_id})
         mongodb.RecordedQuestions.delete_one({"_id": result.inserted_id})
 
     @pytest.fixture
     def user(self, mongodb):
-        user_doc = {"recordedAudios": []}
+        user_doc = {"_id": testutil.generate_uid(), "recordedAudios": []}
         result = mongodb.Users.insert_one(user_doc)
-        user_doc["_id"] = result.inserted_id
         yield user_doc
         mongodb.Users.delete_one({"_id": result.inserted_id})
 
     @pytest.fixture
-    def unproc_audio_document(self, mongodb, unrec_question, user, flask_app):
+    def unproc_audio_document_id(self, mongodb, unrec_question, user, flask_app):
         audio_doc = {
             "_id": testutil.generate_audio_id(),
-            "questionId": unrec_question["_id"],
+            "qb_id": unrec_question["qb_id"],
+            "sentenceId": unrec_question["sentenceId"],
             "userId": user["_id"],
             "gentleVtt": "Foo",
             "recType": "normal",
@@ -546,10 +664,10 @@ class TestProcessAudio:
         mongodb.UnprocessedAudio.delete_one({"_id": audio_result.inserted_id})
 
     @pytest.fixture
-    def update_batch(self, mongodb, unrec_question, unproc_audio_document):
+    def update_batch(self, mongodb, unrec_question, unproc_audio_document_id):
         batch = [
             {
-                "_id": unproc_audio_document,
+                "_id": unproc_audio_document_id,
                 "vtt": "Bar",
                 "score": {"wer": 1.0, "mer": 1.0, "wil": 1.0},
                 "transcript": unrec_question["transcript"],
@@ -558,24 +676,33 @@ class TestProcessAudio:
             }
         ]
         yield batch
-        mongodb.Audio.delete_one({"_id": unproc_audio_document})
+        mongodb.Audio.delete_one({"_id": unproc_audio_document_id})
 
     # Test Case: Send a single update document with the required fields.
-    def test_single(self, client, mongodb, update_batch, unproc_audio_document, unrec_question, user):
-        doc_required_fields = ["_id", "version", "questionId", "userId", "transcript", "vtt", "score", "batchNumber",
-                               "metadata", "gentleVtt", "recType"]
+    def test_single(self, client, mongodb, update_batch, unproc_audio_document_id, unrec_question, user):
+        doc_required_fields = ["_id", "version", "qb_id", "sentenceId", "userId", "transcript", "vtt", "score",
+                               "batchNumber", "metadata", "gentleVtt", "recType"]
         response = client.patch(self.ROUTE, json={"arguments": update_batch})
         response_body = response.get_json()
         assert response_body["total"] == len(update_batch)
         assert response_body["successes"] == response_body["total"]
 
-        audio_doc = mongodb.Audio.find_one({"_id": unproc_audio_document})
+        audio_doc = mongodb.Audio.find_one({"_id": unproc_audio_document_id})
         for field in doc_required_fields:
             assert field in audio_doc
-        question_doc = mongodb.RecordedQuestions.find_one({"_id": unrec_question["_id"]})
+        question_doc = mongodb.RecordedQuestions.find_one({
+            "qb_id": unrec_question["qb_id"],
+            "sentenceId": unrec_question["sentenceId"]
+        })
         recording = question_doc["recordings"][0]
-        assert recording["id"] == unproc_audio_document
+        assert recording["id"] == unproc_audio_document_id
         assert recording["recType"] == "normal"
+
+        user_doc = mongodb.Users.find_one({"_id": user["_id"]})
+        recording = user_doc["recordedAudios"][0]
+        assert recording["id"] == unproc_audio_document_id
+        assert recording["recType"] == "normal"
+
 
 
 @pytest.mark.usefixtures("client", "mongodb", "firebase_bucket", "input_dir", "dev_uid")
@@ -593,8 +720,7 @@ class TestUploadRec:
             transcript = f.read()
         question_result = mongodb.UnrecordedQuestions.insert_one({
             "transcript": transcript,
-            "qb_id": self.DEFAULT_QID,
-            "sentenceId": self.DEFAULT_SID
+            "qb_id": self.DEFAULT_QID
         })
         yield
         mongodb.UnrecordedQuestions.delete_one({"_id": question_result.inserted_id})
@@ -640,7 +766,7 @@ class TestUploadRec:
         audio_path = os.path.join(input_dir, "exact.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
-        yield {"qb_id": self.DEFAULT_QID, "sentenceId": self.DEFAULT_SID, "audio": audio, "recType": "normal"}
+        yield {"qb_id": self.DEFAULT_QID, "audio": audio, "recType": "normal"}
         audio.close()
 
     @pytest.fixture
@@ -648,7 +774,7 @@ class TestUploadRec:
         audio_path = os.path.join(input_dir, "mismatch.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
-        yield {"qb_id": self.DEFAULT_QID, "sentenceId": self.DEFAULT_SID, "audio": audio, "recType": "normal"}
+        yield {"qb_id": self.DEFAULT_QID, "audio": audio, "recType": "normal"}
         audio.close()
 
     @pytest.fixture
@@ -656,7 +782,7 @@ class TestUploadRec:
         audio_path = os.path.join(input_dir, "bad_env.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
-        yield {"qb_id": self.DEFAULT_QID, "sentenceId": self.DEFAULT_SID, "audio": audio, "recType": "normal"}
+        yield {"qb_id": self.DEFAULT_QID, "audio": audio, "recType": "normal"}
         audio.close()
 
     @pytest.fixture
@@ -716,7 +842,7 @@ class TestUploadRec:
 
     # Test Case: Submitting a recording that should be guaranteed to pass the pre-screening.
     def test_success(self, client, mongodb, exact_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType"]
+        doc_required_fields = ["gentleVtt", "qb_id", "userId", "recType"]
         response = client.post(self.ROUTE, data=exact_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
