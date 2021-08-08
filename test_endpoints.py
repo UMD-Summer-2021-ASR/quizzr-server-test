@@ -289,7 +289,12 @@ class TestGetTranscript:
         question_docs = []
         for i in range(difficulty_bounds[0], difficulty_bounds[1] + 1):
             for j in range(0, self.NUM_SENTENCES):
-                question_docs.append({"qb_id": i, "sentenceId": j, "transcript": str(bson.ObjectId()), "recDifficulty": i})  # Equivalence buster
+                question_docs.append({
+                    "qb_id": i,
+                    "sentenceId": j,
+                    "transcript": str(bson.ObjectId()),  # Equivalence buster
+                    "recDifficulty": i
+                })
 
         question_results = mongodb.UnrecordedQuestions.insert_many(question_docs)
         yield question_results.inserted_ids
@@ -704,6 +709,317 @@ class TestProcessAudio:
         assert recording["recType"] == "normal"
 
 
+@pytest.mark.usefixtures("client", "mongodb", "socket_server_key")
+class TestProcessGameResults:
+    ROUTE = "/game_results"
+
+    @pytest.fixture
+    def users(self, mongodb):
+        user_docs = [
+            {
+                "_id": testutil.generate_uid(),
+                "username": "John Doe"
+            },
+            {
+                "_id": testutil.generate_uid(),
+                "username": "Jane Doe"
+            },
+            {
+                "_id": testutil.generate_uid(),
+                "username": "Johnson"
+            }
+        ]
+        results = mongodb.Users.insert_many(user_docs)
+        yield user_docs
+        mongodb.Users.delete_many({"_id": {"$in": results.inserted_ids}})
+
+    @pytest.fixture
+    def user(self, mongodb):
+        user_doc = {
+            "_id": testutil.generate_uid(),
+            "username": "John Doe"
+        }
+        result = mongodb.Users.insert_one(user_doc)
+        yield user_doc
+        mongodb.Users.delete_one({"_id": result.inserted_id})
+
+    @pytest.fixture
+    def update_args(self, user):
+        return [
+            {
+                "mode": "casual",
+                "category": "literature",
+                "users": {
+                    user["username"]: {
+                        "questionStats": {
+                            "played": 10,
+                            "buzzed": 5,
+                            "correct": 2,
+                            "cumulativeProgressOnBuzz": {
+                                "percentQuestionRead": 2.5,
+                                "numSentences": 10
+                            }
+                        },
+                        "finished": True,
+                        "won": False
+                    }
+                }
+            },
+            {
+                "mode": "casual",
+                "category": "literature",
+                "users": {
+                    user["username"]: {
+                        "questionStats": {
+                            "played": 7,
+                            "buzzed": 2,
+                            "correct": 2,
+                            "cumulativeProgressOnBuzz": {
+                                "percentQuestionRead": 1.5,
+                                "numSentences": 6
+                            }
+                        },
+                        "finished": False,
+                        "won": False
+                    }
+                }
+            },
+            {
+                "mode": "casual",
+                "category": "literature",
+                "users": {
+                    user["username"]: {
+                        "questionStats": {
+                            "played": 7,
+                            "buzzed": 2,
+                            "correct": 2,
+                            "cumulativeProgressOnBuzz": {
+                                "percentQuestionRead": 1.5,
+                                "numSentences": 6
+                            }
+                        },
+                        "finished": True,
+                        "won": True
+                    }
+                }
+            },
+            {
+                "mode": "casual",
+                "category": "history",
+                "users": {
+                    user["username"]: {
+                        "questionStats": {
+                            "played": 7,
+                            "buzzed": 2,
+                            "correct": 2,
+                            "cumulativeProgressOnBuzz": {
+                                "percentQuestionRead": 1.5,
+                                "numSentences": 6
+                            }
+                        },
+                        "finished": True,
+                        "won": True
+                    }
+                }
+            },
+            {
+                "mode": "competitive",
+                "category": "literature",
+                "users": {
+                    user["username"]: {
+                        "questionStats": {
+                            "played": 7,
+                            "buzzed": 2,
+                            "correct": 2,
+                            "cumulativeProgressOnBuzz": {
+                                "percentQuestionRead": 1.5,
+                                "numSentences": 6
+                            }
+                        },
+                        "finished": True,
+                        "won": True
+                    }
+                }
+            }
+        ]
+
+    @pytest.fixture
+    def update_args_multiple(self, users):
+        user_update_args = {}
+        for i, user in enumerate(users):
+            user_update_args[user["username"]] = {
+                "questionStats": {
+                    "played": i + 1,
+                    "buzzed": i + 1,
+                    "correct": i + 1,
+                    "cumulativeProgressOnBuzz": {
+                        "percentQuestionRead": i + 1,
+                        "numSentences": i + 1
+                    }
+                },
+                "finished": i % 2 == 0,  # Alternate between True and False
+                "won": i % 4 == 0  # Set to True every 4 iterations, otherwise False
+            }
+        return {
+            "mode": "casual",
+            "category": "literature",
+            "users": user_update_args
+        }
+
+    @pytest.fixture
+    def expected_results(self, user):
+        stats_list = [
+            {
+                "casual": {
+                    "questions": {
+                        "played": {"all": 10, "literature": 10},
+                        "buzzed": {"all": 5, "literature": 5},
+                        "correct": {"all": 2, "literature": 2},
+                        "cumulativeProgressOnBuzz": {
+                            "percentQuestionRead": {"all": 2.5, "literature": 2.5},
+                            "numSentences": {"all": 10, "literature": 10}
+                        }
+                    },
+                    "game": {
+                        "played": {"all": 1, "literature": 1},
+                        "finished": {"all": 1, "literature": 1},
+                        "won": {"all": 0, "literature": 0}
+                    }
+                }
+            },
+            {
+                "casual": {
+                    "questions": {
+                        "played": {"all": 17, "literature": 17},
+                        "buzzed": {"all": 7, "literature": 7},
+                        "correct": {"all": 4, "literature": 4},
+                        "cumulativeProgressOnBuzz": {
+                            "percentQuestionRead": {"all": 4.0, "literature": 4.0},
+                            "numSentences": {"all": 16, "literature": 16}
+                        }
+                    },
+                    "game": {
+                        "played": {"all": 2, "literature": 2},
+                        "finished": {"all": 1, "literature": 1},
+                        "won": {"all": 0, "literature": 0}
+                    }
+                }
+            },
+            {
+                "casual": {
+                    "questions": {
+                        "played": {"all": 24, "literature": 24},
+                        "buzzed": {"all": 9, "literature": 9},
+                        "correct": {"all": 6, "literature": 6},
+                        "cumulativeProgressOnBuzz": {
+                            "percentQuestionRead": {"all": 5.5, "literature": 5.5},
+                            "numSentences": {"all": 22, "literature": 22}
+                        }
+                    },
+                    "game": {
+                        "played": {"all": 3, "literature": 3},
+                        "finished": {"all": 2, "literature": 2},
+                        "won": {"all": 1, "literature": 1}
+                    }
+                }
+            },
+            {
+                "casual": {
+                    "questions": {
+                        "played": {"all": 31, "literature": 24, "history": 7},
+                        "buzzed": {"all": 11, "literature": 9, "history": 2},
+                        "correct": {"all": 8, "literature": 6, "history": 2},
+                        "cumulativeProgressOnBuzz": {
+                            "percentQuestionRead": {"all": 7.0, "literature": 5.5, "history": 1.5},
+                            "numSentences": {"all": 28, "literature": 22, "history": 6}
+                        }
+                    },
+                    "game": {
+                        "played": {"all": 4, "literature": 3, "history": 1},
+                        "finished": {"all": 3, "literature": 2, "history": 1},
+                        "won": {"all": 2, "literature": 1, "history": 1}
+                    }
+                }
+            },
+            {
+                "casual": {
+                    "questions": {
+                        "played": {"all": 31, "literature": 24, "history": 7},
+                        "buzzed": {"all": 11, "literature": 9, "history": 2},
+                        "correct": {"all": 8, "literature": 6, "history": 2},
+                        "cumulativeProgressOnBuzz": {
+                            "percentQuestionRead": {"all": 7.0, "literature": 5.5, "history": 1.5},
+                            "numSentences": {"all": 28, "literature": 22, "history": 6}
+                        }
+                    },
+                    "game": {
+                        "played": {"all": 4, "literature": 3, "history": 1},
+                        "finished": {"all": 3, "literature": 2, "history": 1},
+                        "won": {"all": 2, "literature": 1, "history": 1}
+                    }
+                },
+                "competitive": {
+                    "questions": {
+                        "played": {"all": 7, "literature": 7},
+                        "buzzed": {"all": 2, "literature": 2},
+                        "correct": {"all": 2, "literature": 2},
+                        "cumulativeProgressOnBuzz": {
+                            "percentQuestionRead": {"all": 1.5, "literature": 1.5},
+                            "numSentences": {"all": 6, "literature": 6}
+                        }
+                    },
+                    "game": {
+                        "played": {"all": 1, "literature": 1},
+                        "finished": {"all": 1, "literature": 1},
+                        "won": {"all": 1, "literature": 1}
+                    }
+                }
+            }
+        ]
+        for stats in stats_list:
+            for mode_stats in stats.values():
+                q_stats = mode_stats["questions"]
+                q_stats["avgProgressOnBuzz"] = {}
+                for k, c_progress_on_buzz_stat in q_stats["cumulativeProgressOnBuzz"].items():
+                    avg_progress_on_buzz = q_stats["avgProgressOnBuzz"]
+                    # noinspection PyTypeChecker
+                    avg_progress_on_buzz[k] = {}
+                    for cat_name, cat_val in c_progress_on_buzz_stat.items():
+                        avg_progress_on_buzz[k][cat_name] = cat_val / q_stats["played"][cat_name]
+                q_stats["buzzRate"] = {}
+                q_stats["buzzAccuracy"] = {}
+                for cat_name in q_stats["played"]:
+                    # noinspection PyTypeChecker
+                    q_stats["buzzRate"][cat_name] = q_stats["buzzed"][cat_name] / q_stats["played"][cat_name]
+                    # noinspection PyTypeChecker
+                    q_stats["buzzAccuracy"][cat_name] = q_stats["correct"][cat_name] / q_stats["buzzed"][cat_name]
+                g_stats = mode_stats["game"]
+                g_stats["winRate"] = {}
+                for cat_name in g_stats["played"]:
+                    # noinspection PyTypeChecker
+                    g_stats["winRate"][cat_name] = g_stats["won"][cat_name] / g_stats["played"][cat_name]
+        return [{"stats": stats, **user} for stats in stats_list]
+
+    # Test Case: One user. Test multiple updates and assert that they work as intended.
+    def test_single_growth(self, client, mongodb, user, update_args, socket_server_key, expected_results):
+        for i in range(len(update_args)):
+            response = client.put(self.ROUTE, json=update_args[i], headers={"Authorization": socket_server_key})
+            assert testutil.match_status(HTTPStatus.OK, response.status)  # Might be better to use response.status_code
+            response_body = response.get_json()
+            assert response_body["updateSuccessful"]
+            live_user = mongodb.Users.find_one({"_id": user["_id"]})
+            assert live_user == expected_results[i]
+
+    # Test Case: Multiple users. Assert that the iteration works properly.
+    def test_multiple(self, client, mongodb, users, update_args_multiple, socket_server_key):
+        response = client.put(self.ROUTE, json=update_args_multiple, headers={"Authorization": socket_server_key})
+        assert testutil.match_status(HTTPStatus.OK, response.status)
+        response_body = response.get_json()
+        assert response_body["updateSuccessful"]
+        for user in users:
+            live_user = mongodb.Users.find_one({"_id": user["_id"]})
+            assert "stats" in live_user
+
 
 @pytest.mark.usefixtures("client", "mongodb", "firebase_bucket", "input_dir", "dev_uid")
 class TestUploadRec:
@@ -941,7 +1257,8 @@ class TestUploadRec:
         assert not response_body.get("prescreenSuccessful")
 
     @pytest.mark.xfail
-    def test_segmented_partial_mismatch(self, mongodb, client, segmented_partial_mismatch_data, upload_cleanup, user_id):
+    def test_segmented_partial_mismatch(self,
+                                        mongodb, client, segmented_partial_mismatch_data, upload_cleanup, user_id):
         doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType"]
         response = client.post(self.ROUTE, data=segmented_partial_mismatch_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)

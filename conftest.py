@@ -55,6 +55,13 @@ def mongodb_client():
 
 
 @pytest.fixture(scope="session")
+def socket_server_key(client):
+    response = client.post("/socket/key")
+    response_body = response.get_json()
+    return response_body["key"]
+
+
+@pytest.fixture(scope="session")
 def flask_app(blob_root_name, db_name, dev_uid):
     app = create_app({
         "Q_ENV": "testing",
