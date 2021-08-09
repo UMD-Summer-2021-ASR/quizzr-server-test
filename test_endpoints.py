@@ -85,6 +85,12 @@ class TestGetRec:
     def path_op_pair(self, api_spec):
         return api_spec.path_for("pick_game_question")
 
+    @pytest.fixture(scope="session")
+    def schema(self, path_op_pair, api_spec):
+        op_content = api_spec.api["paths"][path_op_pair[0]][path_op_pair[1]]
+        schema = op_content["responses"][str(int(HTTPStatus.OK))]["content"]["application/json"]["schema"]
+        return api_spec.build_schema(schema)
+
     @pytest.fixture
     def doc_setup(self, mongodb, flask_app):
         num_docs = 5
@@ -114,6 +120,7 @@ class TestGetRec:
             "transcript": str(bson.ObjectId()),
             "recDifficulty": 0,
             "answer": "Foo",
+            "category": "unknown",
             "recordings": [{"id": rec_id, "recType": "normal"} for rec_id in audio_ids]
         })
 
@@ -180,6 +187,7 @@ class TestGetRec:
                 "transcript": str(bson.ObjectId()),
                 "recDifficulty": 0,
                 "answer": "Foo",
+                "category": "unknown",
                 "recordings": [{"id": rec_id, "recType": "normal"} for rec_id in audio_ids]
             })
 
@@ -193,26 +201,57 @@ class TestGetRec:
         mongodb.RecordedQuestions.delete_many({"_id": {"$in": inserted_question_ids}})
         mongodb.Users.delete_many({"_id": {"$in": user_ids}})
 
+    @pytest.fixture
+    def doc_setup_categorical(self, mongodb, flask_app):
+        question_docs = []
+        audio_docs = []
+        categories = ["literature", "history", "mathematics", "science"]
+        for i, cat in enumerate(categories):
+            audio_id = testutil.generate_audio_id()
+            question_docs.append({
+                "qb_id": i,
+                "transcript": str(bson.ObjectId()),
+                "recDifficulty": 0,
+                "answer": "Foo",
+                "category": cat,
+                "recordings": [{"id": audio_id, "recType": "normal"}]
+            })
+            audio_docs.append({
+                "_id": audio_id,
+                "qb_id": i,
+                "vtt": "The quick brown fox jumps over the lazy dog.",
+                "gentleVtt": "This is a dummy VTT.",
+                "version": flask_app.config["VERSION"],
+                "score": {
+                    "wer": i + 1,
+                    "mer": i + 1,
+                    "wil": i + 1
+                },
+                "userId": testutil.generate_uid()
+            })
+        question_results = mongodb.RecordedQuestions.insert_many(question_docs)
+        audio_results = mongodb.Audio.insert_many(audio_docs)
+        yield
+        mongodb.RecordedQuestions.delete_many({"_id": {"$in": question_results.inserted_ids}})
+        mongodb.Audio.delete_many({"_id": {"$in": audio_results.inserted_ids}})
+
     # Test Case: Not segmented
-    def test_whole(self, path_op_pair, client, mongodb, doc_setup, api_spec):
+    def test_whole(self, path_op_pair, client, mongodb, doc_setup, schema):
         response = client.get(self.ROUTE)
-        response_body = response.get_json()
         assert testutil.match_status(HTTPStatus.OK, response.status)
-        op_content = api_spec.api["paths"][path_op_pair[0]][path_op_pair[1]]
-        schema = op_content["responses"][str(int(HTTPStatus.OK))]["content"]["application/json"]["schema"]
-        validate(response_body, api_spec.build_schema(schema))
+        response_body = response.get_json()
+        validate(response_body, schema)
         question = response_body["results"][0]
         audio = question["audio"][0]
         doc = mongodb.Audio.find_one({"_id": audio["id"]})
         assert doc == doc_setup
 
-    def test_segmented(self, path_op_pair, client, mongodb, doc_setup_segmented, api_spec):
+    # Test Case: Segmented
+    def test_segmented(self, client, mongodb, doc_setup_segmented, schema):
         response = client.get(self.ROUTE)
-        response_body = response.get_json()
         assert testutil.match_status(HTTPStatus.OK, response.status)
-        op_content = api_spec.api["paths"][path_op_pair[0]][path_op_pair[1]]
-        schema = op_content["responses"][str(int(HTTPStatus.OK))]["content"]["application/json"]["schema"]
-        validate(response_body, api_spec.build_schema(schema))
+        response_body = response.get_json()
+        validate(response_body, schema)
         for question in response_body["results"]:
             expected_uid = None
             for audio in question["audio"]:
@@ -222,6 +261,19 @@ class TestGetRec:
                     expected_uid = uid
                 else:
                     assert expected_uid == uid
+
+    @pytest.mark.parametrize("categories", [
+        (["literature"],),
+        (["literature", "history"],),
+        (["literature", "history", "mathematics", "science"],)
+    ])
+    def test_categorical(self, client, mongodb, doc_setup_categorical, schema, categories):
+        response = client.get(self.ROUTE, query_string={"category": categories})
+        assert testutil.match_status(HTTPStatus.OK, response.status)
+        response_body = response.get_json()
+        validate(response_body, schema)
+        for question in response_body["results"]:
+            assert question["category"] in categories
 
 
 @pytest.mark.usefixtures("client", "flask_app", "mongodb")
@@ -844,29 +896,6 @@ class TestProcessGameResults:
         ]
 
     @pytest.fixture
-    def update_args_multiple(self, users):
-        user_update_args = {}
-        for i, user in enumerate(users):
-            user_update_args[user["username"]] = {
-                "questionStats": {
-                    "played": i + 1,
-                    "buzzed": i + 1,
-                    "correct": i + 1,
-                    "cumulativeProgressOnBuzz": {
-                        "percentQuestionRead": i + 1,
-                        "numSentences": i + 1
-                    }
-                },
-                "finished": i % 2 == 0,  # Alternate between True and False
-                "won": i % 4 == 0  # Set to True every 4 iterations, otherwise False
-            }
-        return {
-            "mode": "casual",
-            "category": "literature",
-            "users": user_update_args
-        }
-
-    @pytest.fixture
     def expected_results(self, user):
         stats_list = [
             {
@@ -1000,13 +1029,143 @@ class TestProcessGameResults:
                     g_stats["winRate"][cat_name] = g_stats["won"][cat_name] / g_stats["played"][cat_name]
         return [{"stats": stats, **user} for stats in stats_list]
 
+    @pytest.fixture
+    def update_args_multiple(self, users):
+        user_update_args = {}
+        for i, user in enumerate(users):
+            user_update_args[user["username"]] = {
+                "questionStats": {
+                    "played": i + 1,
+                    "buzzed": i + 1,
+                    "correct": i + 1,
+                    "cumulativeProgressOnBuzz": {
+                        "percentQuestionRead": i + 1,
+                        "numSentences": i + 1
+                    }
+                },
+                "finished": i % 2 == 0,  # Alternate between True and False
+                "won": i % 4 == 0  # Set to True every 4 iterations, otherwise False
+            }
+        return {
+            "mode": "casual",
+            "category": "literature",
+            "users": user_update_args
+        }
+
+    @pytest.fixture
+    def update_args_multi_category(self, user):
+        return [
+            {
+                "mode": "casual",
+                "categories": ["literature", "history"],
+                "users": {
+                    user["username"]: {
+                        "questionStats": {
+                            "played": {"literature": 10, "history": 5},
+                            "buzzed": {"literature": 5, "history": 1},
+                            "correct": {"literature": 2, "history": 0},
+                            "cumulativeProgressOnBuzz": {
+                                "percentQuestionRead": {"literature": 2.5, "history": 1.5},
+                                "numSentences": {"literature": 10, "history": 7}
+                            }
+                        },
+                        "finished": True,
+                        "won": False
+                    }
+                }
+            },
+            {
+                "mode": "casual",
+                "categories": ["mathematics", "history"],
+                "users": {
+                    user["username"]: {
+                        "questionStats": {
+                            "played": {"mathematics": 10, "history": 5},
+                            "buzzed": {"mathematics": 5, "history": 1},
+                            "correct": {"mathematics": 2, "history": 0},
+                            "cumulativeProgressOnBuzz": {
+                                "percentQuestionRead": {"mathematics": 2.5, "history": 1.5},
+                                "numSentences": {"mathematics": 10, "history": 7}
+                            }
+                        },
+                        "finished": True,
+                        "won": True
+                    }
+                }
+            }
+        ]
+
+    @pytest.fixture
+    def expected_results_multi_category(self, user):
+        stats_list = [
+            {
+                "casual": {
+                    "questions": {
+                        "played": {"all": 15, "literature": 10, "history": 5},
+                        "buzzed": {"all": 6, "literature": 5, "history": 1},
+                        "correct": {"all": 2, "literature": 2, "history": 0},
+                        "cumulativeProgressOnBuzz": {
+                            "percentQuestionRead": {"all": 4.0, "literature": 2.5, "history": 1.5},
+                            "numSentences": {"all": 17, "literature": 10, "history": 7}
+                        }
+                    },
+                    "game": {
+                        "played": {"all": 1, "literature": 1, "history": 1},
+                        "finished": {"all": 1, "literature": 1, "history": 1},
+                        "won": {"all": 0, "literature": 0, "history": 0}
+                    }
+                }
+            },
+            {
+                "casual": {
+                    "questions": {
+                        "played": {"all": 30, "literature": 10, "history": 10, "mathematics": 10},
+                        "buzzed": {"all": 12, "literature": 5, "history": 2, "mathematics": 5},
+                        "correct": {"all": 4, "literature": 2, "history": 0, "mathematics": 2},
+                        "cumulativeProgressOnBuzz": {
+                            "percentQuestionRead": {"all": 8.0, "literature": 2.5, "history": 3.0, "mathematics": 2.5},
+                            "numSentences": {"all": 34, "literature": 10, "history": 14, "mathematics": 10}
+                        }
+                    },
+                    "game": {
+                        "played": {"all": 2, "literature": 1, "history": 2, "mathematics": 1},
+                        "finished": {"all": 2, "literature": 1, "history": 2, "mathematics": 1},
+                        "won": {"all": 1, "literature": 0, "history": 1, "mathematics": 1}
+                    }
+                }
+            }
+        ]
+        for stats in stats_list:
+            for mode_stats in stats.values():
+                q_stats = mode_stats["questions"]
+                q_stats["avgProgressOnBuzz"] = {}
+                for k, c_progress_on_buzz_stat in q_stats["cumulativeProgressOnBuzz"].items():
+                    avg_progress_on_buzz = q_stats["avgProgressOnBuzz"]
+                    # noinspection PyTypeChecker
+                    avg_progress_on_buzz[k] = {}
+                    for cat_name, cat_val in c_progress_on_buzz_stat.items():
+                        avg_progress_on_buzz[k][cat_name] = cat_val / q_stats["played"][cat_name]
+                q_stats["buzzRate"] = {}
+                q_stats["buzzAccuracy"] = {}
+                for cat_name in q_stats["played"]:
+                    # noinspection PyTypeChecker
+                    q_stats["buzzRate"][cat_name] = q_stats["buzzed"][cat_name] / q_stats["played"][cat_name]
+                    # noinspection PyTypeChecker
+                    q_stats["buzzAccuracy"][cat_name] = q_stats["correct"][cat_name] / q_stats["buzzed"][cat_name]
+                g_stats = mode_stats["game"]
+                g_stats["winRate"] = {}
+                for cat_name in g_stats["played"]:
+                    # noinspection PyTypeChecker
+                    g_stats["winRate"][cat_name] = g_stats["won"][cat_name] / g_stats["played"][cat_name]
+        return [{"stats": stats, **user} for stats in stats_list]
+
     # Test Case: One user. Test multiple updates and assert that they work as intended.
     def test_single_growth(self, client, mongodb, user, update_args, socket_server_key, expected_results):
         for i in range(len(update_args)):
             response = client.put(self.ROUTE, json=update_args[i], headers={"Authorization": socket_server_key})
             assert testutil.match_status(HTTPStatus.OK, response.status)  # Might be better to use response.status_code
             response_body = response.get_json()
-            assert response_body["updateSuccessful"]
+            assert response_body["successful"] == response_body["requested"]
             live_user = mongodb.Users.find_one({"_id": user["_id"]})
             assert live_user == expected_results[i]
 
@@ -1015,10 +1174,22 @@ class TestProcessGameResults:
         response = client.put(self.ROUTE, json=update_args_multiple, headers={"Authorization": socket_server_key})
         assert testutil.match_status(HTTPStatus.OK, response.status)
         response_body = response.get_json()
-        assert response_body["updateSuccessful"]
+        assert response_body["successful"] == response_body["requested"]
         for user in users:
             live_user = mongodb.Users.find_one({"_id": user["_id"]})
             assert "stats" in live_user
+
+    # Test Case: One user, multiple categories. Test multiple updates and assert that they work as intended.
+    def test_multi_category(self, client, mongodb, user,
+                            update_args_multi_category, socket_server_key, expected_results_multi_category):
+        for i in range(len(update_args_multi_category)):
+            response = client.put(self.ROUTE,
+                                  json=update_args_multi_category[i], headers={"Authorization": socket_server_key})
+            assert testutil.match_status(HTTPStatus.OK, response.status)  # Might be better to use response.status_code
+            response_body = response.get_json()
+            assert response_body["successful"] == response_body["requested"]
+            live_user = mongodb.Users.find_one({"_id": user["_id"]})
+            assert live_user == expected_results_multi_category[i]
 
 
 @pytest.mark.usefixtures("client", "mongodb", "firebase_bucket", "input_dir", "dev_uid")
