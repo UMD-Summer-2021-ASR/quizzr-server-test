@@ -8,6 +8,7 @@ There are two testing modules for the server: `test_endpoints.py` and `test_erro
 This testing module tests the functionality of the server's endpoints in normal scenarios. Currently, it only implements the following test classes:
 * `TestCheckAnswer`
 * `TestGetFile`
+* `TestGetLeaderboard`
 * `TestGetRec`
 * `TestGetTranscript`
 * `TestGetUnprocAudio`
@@ -32,6 +33,7 @@ The name of each class in a testing module defines the action that the associate
 | ----------------------- | -------------------------------------------------------------- |
 | `TestCheckAnswer`       | Check if an answer to a question is correct.                   |
 | `TestGetFile`           | Get a file from Google Drive.                                  |
+| `TestGetLeaderboard`    | Get the top users in ranked games.                             |
 | `TestGetRec`            | Get a recording for answering a question.                      |
 | `TestGetTranscript`     | Get a transcript for recording.                                |
 | `TestGetUnprocAudio`    | Get a batch of unprocessed audio documents.                    |
