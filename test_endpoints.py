@@ -64,7 +64,7 @@ class TestCheckAnswer:
         assert not response_body["correct"]
 
 
-@pytest.mark.usefixtures("blob_file")
+@pytest.mark.usefixtures("blob_file", "client")
 class TestGetFile:
     ROUTE = "/audio"
 
@@ -75,6 +75,45 @@ class TestGetFile:
     def test_download(self, client, full_route):
         response = client.get(full_route)
         assert testutil.match_status(HTTPStatus.OK, response.status)
+
+
+@pytest.mark.usefixtures("client", "mongodb", "api_spec")
+class TestGetLeaderboard:
+    ROUTE = "/leaderboard"
+
+    @pytest.fixture
+    def users(self, mongodb, api_spec):
+        user_docs = []
+        for i in range(5):
+            profile = api_spec.get_schema_stub("User")
+            profile.update({
+                "_id": testutil.generate_uid(),
+                "username": f"User{i + 1}",
+                "ratings": {
+                    "all": i + 1,
+                    "literature": i + 1,
+                    "mathematics": 5 - i
+                }
+            })
+            user_docs.append(profile)
+        random.shuffle(user_docs)
+
+        results = mongodb.Users.insert_many(user_docs)
+        yield
+        mongodb.Users.delete_many({"_id": {"$in": results.inserted_ids}})
+
+    @pytest.mark.parametrize("category", [("all",), ("literature",), ("mathematics",)])
+    def test_get(self, client, mongodb, category):
+        response = client.get(self.ROUTE, query_string={"category": category})
+        assert response.status_code == HTTPStatus.OK
+        response_body = response.get_json()
+        prev_rating = None
+        for profile in response_body["results"]:
+            live_profile = mongodb.Users.find_one({"username": profile["username"]}, {"ratings": 1})
+            rating = live_profile["ratings"][category]
+            if prev_rating is not None:
+                assert rating < prev_rating
+            prev_rating = rating
 
 
 @pytest.mark.usefixtures("mongodb", "client", "flask_app", "api_spec")
