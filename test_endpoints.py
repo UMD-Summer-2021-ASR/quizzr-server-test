@@ -1550,6 +1550,50 @@ class TestOwnProfile:
         assert not mongodb.Users.find_one({"_id": user_profile["_id"]})
 
 
+@pytest.mark.usefixtures("client", "mongodb", "flask_app")
+class TestHLSGet:
+    ROUTE = "/hls"
+
+    @pytest.fixture
+    def doc_setup(self, mongodb, flask_app, blob_file):
+        user_id = testutil.generate_uid()
+        audio_doc = {
+            "_id": blob_file,
+            "qb_id": 0,
+            "vtt": "The quick brown fox jumps over the lazy dog.",
+            "gentleVtt": "This is a dummy VTT.",
+            "version": flask_app.config["VERSION"],
+            "score": {
+                "wer": 1,
+                "mer": 1,
+                "wil": 1
+            },
+            "userId": user_id
+        }
+
+        question_result = mongodb.RecordedQuestions.insert_one({
+            "qb_id": 0,
+            "transcript": str(bson.ObjectId()),
+            "recDifficulty": 0,
+            "answer": "Foo",
+            "category": "unknown",
+            "recordings": [{"id": blob_file, "recType": "normal"}]
+        })
+        audio_result = mongodb.Audio.insert_one(audio_doc)
+        yield
+        mongodb.Audio.delete_one({"_id": audio_result.inserted_id})
+        mongodb.RecordedQuestions.delete_one({"_id": question_result.inserted_id})
+
+    @pytest.fixture
+    def full_route_vtt(self, blob_file):
+        return "/".join([self.ROUTE, "vtt", blob_file])
+
+    def test_get_vtt(self, client, doc_setup, full_route_vtt):
+        response = client.get(full_route_vtt)
+        assert testutil.match_status(HTTPStatus.OK, response.status)
+        assert response.content_type == "text/plain; charset=utf-8"
+
+
 @pytest.mark.usefixtures("client", "mongodb", "api_spec", "dev_uid")
 class TestOtherProfile:
     ROUTE = "/profile"

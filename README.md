@@ -12,10 +12,11 @@ This testing module tests the functionality of the server's endpoints in normal 
 * `TestGetRec`
 * `TestGetTranscript`
 * `TestGetUnprocAudio`
-* `TestHandleGameResults`
+* `TestHLSGet`
 * `TestOwnProfile`
 * `TestOtherProfile`
 * `TestProcessAudio`
+* `TestProcessGameResults`
 * `TestUploadRec`
 
 
@@ -29,16 +30,18 @@ This testing module tests whether the server handles corrupted data as expected.
 ### Test Class Definitions
 The name of each class in a testing module defines the action that the associated group is testing. The following is the list of actions that the class names signify:
 
-| Class Name              | Description                                                    |
-| ----------------------- | -------------------------------------------------------------- |
-| `TestCheckAnswer`       | Check if an answer to a question is correct.                   |
-| `TestGetFile`           | Get a file from Google Drive.                                  |
-| `TestGetLeaderboard`    | Get the top users in ranked games.                             |
-| `TestGetRec`            | Get a recording for answering a question.                      |
-| `TestGetTranscript`     | Get a transcript for recording.                                |
-| `TestGetUnprocAudio`    | Get a batch of unprocessed audio documents.                    |
-| `TestHandleGameResults` | Send the results of a game session to the server.              |
-| `TestProcessAudio`      | Update a batch of audio documents with processing information. |
-| `TestUploadRec`         | Submit a recording for pre-screening.                          |
-| `TestOwnProfile`        | Perform operations on the user's own profile.                  |
-| `TestOtherProfile`      | Perform operations on the profiles of other users.             |
+| Class Name               | Description                                                    |
+| ------------------------ | -------------------------------------------------------------- |
+| `TestCheckAnswer`        | Check if an answer to a question is correct.                   |
+| `TestGetFile`            | Get a file from Google Drive.                                  |
+| `TestGetLeaderboard`     | Get the top users in ranked games.                             |
+| `TestGetRec`             | Get a recording for answering a question.                      |
+| `TestGetTranscript`      | Get a transcript for recording.                                |
+| `TestGetUnprocAudio`     | Get a batch of unprocessed audio documents.                    |
+| `TestGetUnprocAudio`     | Get a batch of unprocessed audio documents.                    |
+| `TestHLSGet`             | Get a VTT by audio ID.                                         |
+| `TestProcessAudio`       | Update a batch of audio documents with processing information. |
+| `TestProcessGameResults` | Send the results of a game session to the server.              |
+| `TestUploadRec`          | Submit a recording for pre-screening.                          |
+| `TestOwnProfile`         | Perform operations on the user's own profile.                  |
+| `TestOtherProfile`       | Perform operations on the profiles of other users.             |
