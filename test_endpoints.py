@@ -1521,7 +1521,7 @@ class TestOwnProfile:
             "pfp",
             "username",
             "usernameSpecs",
-            "rating",
+            "ratings",
             "totalQuestionsPlayed",
             "totalGames",
             "coins",
