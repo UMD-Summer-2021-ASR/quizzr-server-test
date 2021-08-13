@@ -1591,7 +1591,8 @@ class TestHLSGet:
     def test_get_vtt(self, client, doc_setup, full_route_vtt):
         response = client.get(full_route_vtt)
         assert testutil.match_status(HTTPStatus.OK, response.status)
-        assert response.content_type == "text/plain; charset=utf-8"
+        assert response.content_type == "application/octet-stream"
+        assert response.get_data() == b'The quick brown fox jumps over the lazy dog.'
 
 
 @pytest.mark.usefixtures("client", "mongodb", "api_spec", "dev_uid")
