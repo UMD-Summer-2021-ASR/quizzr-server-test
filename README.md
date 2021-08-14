@@ -20,6 +20,7 @@ This testing module tests the functionality of the server's endpoints in normal 
 
 
 ### `test_error_endpoints.py`
+Do not use this testing module. It is out of date beyond usability. 
 This testing module tests whether the server handles corrupted data as expected. Currently, it only implements the following test classes:
 * `TestGetRec`
 * `TestGetTranscript`
