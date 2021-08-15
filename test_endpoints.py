@@ -1388,7 +1388,7 @@ class TestUploadRec:
 
     # Test Case: Submitting a recording that should be guaranteed to pass the pre-screening.
     def test_success(self, client, mongodb, exact_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "qb_id", "userId", "recType"]
+        doc_required_fields = ["gentleVtt", "qb_id", "userId", "recType", "duration"]
         response = client.post(self.ROUTE, data=exact_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
@@ -1417,7 +1417,7 @@ class TestUploadRec:
 
     # Test Case: Submitting a recording as an administrator.
     def test_admin(self, mongodb, client, admin_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "qb_id", "userId", "recType", "diarMetadata"]
+        doc_required_fields = ["gentleVtt", "qb_id", "userId", "recType", "diarMetadata", "duration"]
         response = client.post(self.ROUTE, data=admin_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
@@ -1431,7 +1431,7 @@ class TestUploadRec:
 
     # Test Case: Submitting a buzz recording.
     def test_buzz(self, mongodb, client, buzz_data, upload_cleanup, user_id):
-        doc_required_fields = ["userId", "recType"]
+        doc_required_fields = ["userId", "recType", "duration"]
         response = client.post(self.ROUTE, data=buzz_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
@@ -1451,7 +1451,7 @@ class TestUploadRec:
 
     # Test Case: Submitting a recording for an answer.
     def test_answer(self, mongodb, client, answer_data, upload_cleanup, user_id):
-        doc_required_fields = ["userId", "recType", "qb_id"]
+        doc_required_fields = ["userId", "recType", "qb_id", "duration"]
         response = client.post(self.ROUTE, data=answer_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
@@ -1471,12 +1471,12 @@ class TestUploadRec:
 
     # Test Case: Submitting a segmented recording for a segmented question.
     def test_segmented(self, mongodb, client, segmented_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType"]
+        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType", "duration"]
         response = client.post(self.ROUTE, data=segmented_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
         for pointer in response_body["prescreenPointers"]:
-            assert self.await_result(client, pointer, timeout=9999999999)["accepted"]
+            assert self.await_result(client, pointer)["accepted"]
         cursor = mongodb.UnprocessedAudio.find()
         for audio_doc in cursor:
             for field in doc_required_fields:
@@ -1495,7 +1495,7 @@ class TestUploadRec:
     @pytest.mark.xfail
     def test_segmented_partial_mismatch(self,
                                         mongodb, client, segmented_partial_mismatch_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType"]
+        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType", "duration"]
         response = client.post(self.ROUTE, data=segmented_partial_mismatch_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
@@ -1545,6 +1545,7 @@ class TestOwnProfile:
 
     def test_get(self, client, user_profile):
         required_fields = [
+            "_id",
             "pfp",
             "username",
             "usernameSpecs",
