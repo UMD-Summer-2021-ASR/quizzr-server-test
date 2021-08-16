@@ -1,5 +1,6 @@
 import os
 import random
+import time
 from copy import deepcopy
 from datetime import datetime
 from http import HTTPStatus
@@ -1232,6 +1233,7 @@ class TestProcessGameResults:
 
 
 @pytest.mark.usefixtures("client", "mongodb", "firebase_bucket", "input_dir", "dev_uid")
+# @pytest.mark.skip(reason="an incompatible change has been made to this endpoint")
 class TestUploadRec:
     ROUTE = "/audio"
     CONTENT_TYPE = "multipart/form-data"
@@ -1366,13 +1368,32 @@ class TestUploadRec:
             data["sentenceId"].append(i)
         return data
 
+    def await_result(self, client, pointer, timeout=60, max_wait_time=2, wait_time=1):
+        total_wait_time = 0
+        status_response = client.get(f"/prescreen/{pointer}")
+        status_response_body = status_response.get_json()
+
+        while status_response_body["status"] != "finished":
+            status_response = client.get(f"/prescreen/{pointer}")
+            status_response_body = status_response.get_json()
+            time.sleep(wait_time)
+            total_wait_time += wait_time
+            wait_time = min(wait_time * 2, max_wait_time)
+            if total_wait_time > timeout:
+                raise RuntimeError(f"Ran out of patience: {total_wait_time} > {timeout}")
+            if status_response_body["status"] == "err":
+                raise RuntimeError(status_response_body["err"])
+
+        return status_response_body
+
     # Test Case: Submitting a recording that should be guaranteed to pass the pre-screening.
     def test_success(self, client, mongodb, exact_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "qb_id", "userId", "recType"]
+        doc_required_fields = ["gentleVtt", "qb_id", "userId", "recType", "duration"]
         response = client.post(self.ROUTE, data=exact_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
-        assert response_body.get("prescreenSuccessful")
+        pointer = response_body["prescreenPointers"][0]
+        assert self.await_result(client, pointer)["accepted"]
         audio_doc = mongodb.UnprocessedAudio.find_one()
         for field in doc_required_fields:
             assert field in audio_doc
@@ -1382,8 +1403,8 @@ class TestUploadRec:
         response = client.post(self.ROUTE, data=bad_env_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
-        logger.debug(f"response_body = {response_body}")
-        assert response_body.get("prescreenSuccessful")
+        pointer = response_body["prescreenPointers"][0]
+        assert self.await_result(client, pointer)["accepted"]
 
     # Test Case: Submitting a recording of the speaker reading a paragraph from the "Lorem ipsum" Wikipedia article.
     # Source: https://en.wikipedia.org/wiki/Lorem_ipsum
@@ -1391,17 +1412,17 @@ class TestUploadRec:
         response = client.post(self.ROUTE, data=mismatch_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
-        logger.debug(f"response_body = {response_body}")
-        assert not response_body.get("prescreenSuccessful")
+        pointer = response_body["prescreenPointers"][0]
+        assert not self.await_result(client, pointer)["accepted"]
 
     # Test Case: Submitting a recording as an administrator.
     def test_admin(self, mongodb, client, admin_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "qb_id", "userId", "recType", "diarMetadata"]
+        doc_required_fields = ["gentleVtt", "qb_id", "userId", "recType", "diarMetadata", "duration"]
         response = client.post(self.ROUTE, data=admin_data, content_type=self.CONTENT_TYPE)
-        response_body = response.get_json()
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
-        assert response_body.get("prescreenSuccessful")
-        logger.debug(f"response_body = {response_body}")
+        response_body = response.get_json()
+        pointer = response_body["prescreenPointers"][0]
+        assert self.await_result(client, pointer)["accepted"]
         audio_doc = mongodb.UnprocessedAudio.find_one()
         assert audio_doc
         for field in doc_required_fields:
@@ -1410,12 +1431,12 @@ class TestUploadRec:
 
     # Test Case: Submitting a buzz recording.
     def test_buzz(self, mongodb, client, buzz_data, upload_cleanup, user_id):
-        doc_required_fields = ["userId", "recType"]
+        doc_required_fields = ["userId", "recType", "duration"]
         response = client.post(self.ROUTE, data=buzz_data, content_type=self.CONTENT_TYPE)
-        response_body = response.get_json()
-        logger.debug(f"response_body = {response_body}")
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
-        assert response_body.get("prescreenSuccessful")
+        response_body = response.get_json()
+        pointer = response_body["prescreenPointers"][0]
+        assert self.await_result(client, pointer)["accepted"]
 
         audio_doc = mongodb.Audio.find_one()
         assert audio_doc
@@ -1430,12 +1451,12 @@ class TestUploadRec:
 
     # Test Case: Submitting a recording for an answer.
     def test_answer(self, mongodb, client, answer_data, upload_cleanup, user_id):
-        doc_required_fields = ["userId", "recType", "qb_id"]
+        doc_required_fields = ["userId", "recType", "qb_id", "duration"]
         response = client.post(self.ROUTE, data=answer_data, content_type=self.CONTENT_TYPE)
-        response_body = response.get_json()
-        logger.debug(f"response_body = {response_body}")
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
-        assert response_body.get("prescreenSuccessful")
+        response_body = response.get_json()
+        pointer = response_body["prescreenPointers"][0]
+        assert self.await_result(client, pointer)["accepted"]
 
         audio_doc = mongodb.Audio.find_one()
         assert audio_doc
@@ -1448,32 +1469,38 @@ class TestUploadRec:
         assert rec["id"] == audio_doc["_id"]
         assert rec["recType"] == "answer"
 
-    # Test Case: Submitting a segmented question.
+    # Test Case: Submitting a segmented recording for a segmented question.
     def test_segmented(self, mongodb, client, segmented_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType"]
+        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType", "duration"]
         response = client.post(self.ROUTE, data=segmented_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
-        assert response_body.get("prescreenSuccessful")
+        for pointer in response_body["prescreenPointers"]:
+            assert self.await_result(client, pointer)["accepted"]
         cursor = mongodb.UnprocessedAudio.find()
         for audio_doc in cursor:
             for field in doc_required_fields:
                 assert field in audio_doc
 
+    # Test Case: Submitting a segmented recording of the speaker reading a paragraph from the "Lorem ipsum" Wikipedia
+    # article for a segmented question.
+    # Source: https://en.wikipedia.org/wiki/Lorem_ipsum
     def test_segmented_mismatch(self, mongodb, client, segmented_mismatch_data, upload_cleanup, user_id):
         response = client.post(self.ROUTE, data=segmented_mismatch_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
-        assert not response_body.get("prescreenSuccessful")
+        for pointer in response_body["prescreenPointers"]:
+            assert not self.await_result(client, pointer)["accepted"]
 
     @pytest.mark.xfail
     def test_segmented_partial_mismatch(self,
                                         mongodb, client, segmented_partial_mismatch_data, upload_cleanup, user_id):
-        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType"]
+        doc_required_fields = ["gentleVtt", "qb_id", "sentenceId", "userId", "recType", "duration"]
         response = client.post(self.ROUTE, data=segmented_partial_mismatch_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
-        assert response_body.get("prescreenSuccessful")
+        for pointer in response_body["prescreenPointers"]:
+            assert self.await_result(client, pointer)["accepted"]
         cursor = mongodb.UnprocessedAudio.find()
         for audio_doc in cursor:
             for field in doc_required_fields:
@@ -1518,6 +1545,7 @@ class TestOwnProfile:
 
     def test_get(self, client, user_profile):
         required_fields = [
+            "_id",
             "pfp",
             "username",
             "usernameSpecs",

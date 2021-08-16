@@ -1,5 +1,7 @@
 import os
 import secrets
+from shutil import rmtree
+from tempfile import mkdtemp
 
 import pymongo
 import pytest
@@ -63,6 +65,7 @@ def socket_server_key(client):
 
 @pytest.fixture(scope="session")
 def flask_app(blob_root_name, db_name, dev_uid):
+    storage_dir = mkdtemp()
     app = create_app({
         "Q_ENV": "testing",
         "DATABASE": db_name,
@@ -71,8 +74,9 @@ def flask_app(blob_root_name, db_name, dev_uid):
         "DEV_UID": dev_uid,
         "TESTING": True,
         "USE_ID_TOKENS": False
-    })
-    return app
+    }, test_storage_root=storage_dir)
+    yield app
+    rmtree(storage_dir)
 
 
 @pytest.fixture(scope="session")
