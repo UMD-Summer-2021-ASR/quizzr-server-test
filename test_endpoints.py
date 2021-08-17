@@ -103,7 +103,7 @@ class TestGetLeaderboard:
         yield
         mongodb.Users.delete_many({"_id": {"$in": results.inserted_ids}})
 
-    @pytest.mark.parametrize("category", [("all",), ("literature",), ("mathematics",)])
+    @pytest.mark.parametrize("category", ["all", "literature", "mathematics"])
     def test_get(self, client, mongodb, category):
         response = client.get(self.ROUTE, query_string={"category": category})
         assert response.status_code == HTTPStatus.OK
@@ -152,7 +152,8 @@ class TestGetRec:
                     "mer": i + 1,
                     "wil": i + 1
                 },
-                "userId": user_id
+                "userId": user_id,
+                "recType": "normal"
             })
 
         question_result = mongodb.RecordedQuestions.insert_one({
@@ -202,7 +203,8 @@ class TestGetRec:
                         "mer": (num_sentences - i) + j + 1,
                         "wil": (num_sentences - i) + j + 1
                     },
-                    "userId": user_ids[0]
+                    "userId": user_ids[0],
+                    "recType": "normal"
                 })
                 audio_id = testutil.generate_audio_id()
                 audio_ids.append(audio_id)
@@ -218,7 +220,8 @@ class TestGetRec:
                         "mer": i + j + 1,
                         "wil": i + j + 1
                     },
-                    "userId": user_ids[1]
+                    "userId": user_ids[1],
+                    "recType": "normal"
                 })
 
             question_result = mongodb.RecordedQuestions.insert_one({
@@ -267,7 +270,8 @@ class TestGetRec:
                     "mer": i + 1,
                     "wil": i + 1
                 },
-                "userId": testutil.generate_uid()
+                "userId": testutil.generate_uid(),
+                "recType": "normal"
             })
         question_results = mongodb.RecordedQuestions.insert_many(question_docs)
         audio_results = mongodb.Audio.insert_many(audio_docs)
@@ -303,9 +307,9 @@ class TestGetRec:
                     assert expected_uid == uid
 
     @pytest.mark.parametrize("categories", [
-        (["literature"],),
-        (["literature", "history"],),
-        (["literature", "history", "mathematics", "science"],)
+        ["literature"],
+        ["literature", "history"],
+        ["literature", "history", "mathematics", "science"]
     ])
     def test_categorical(self, client, mongodb, doc_setup_categorical, schema, categories):
         response = client.get(self.ROUTE, query_string={"category": categories})
