@@ -1250,11 +1250,13 @@ class TestUploadRec:
         assert os.path.exists(transcript_path)
         with open(transcript_path, "r") as f:
             transcript = f.read()
-        question_result = mongodb.UnrecordedQuestions.insert_one({
+        question_doc = {
             "transcript": transcript,
-            "qb_id": self.DEFAULT_QID
-        })
-        yield
+            "qb_id": self.DEFAULT_QID,
+            "answer": "Foo"
+        }
+        question_result = mongodb.UnrecordedQuestions.insert_one(question_doc)
+        yield question_doc
         mongodb.UnrecordedQuestions.delete_one({"_id": question_result.inserted_id})
 
     @pytest.fixture
@@ -1336,7 +1338,13 @@ class TestUploadRec:
         audio_path = os.path.join(input_dir, "answer.wav")
         assert os.path.exists(audio_path)
         audio = open(audio_path, "rb")
-        yield {"audio": audio, "recType": "answer", "qb_id": self.DEFAULT_QID}
+        yield {
+            "audio": audio,
+            "recType": "answer",
+            "expectedAnswer": unrec_qid["answer"],
+            "transcript": "Bar",
+            "correct": False
+        }
         audio.close()
 
     @pytest.fixture
@@ -1455,7 +1463,7 @@ class TestUploadRec:
 
     # Test Case: Submitting a recording for an answer.
     def test_answer(self, mongodb, client, answer_data, upload_cleanup, user_id):
-        doc_required_fields = ["userId", "recType", "qb_id", "duration"]
+        doc_required_fields = ["userId", "recType", "expectedAnswer", "correct", "transcript", "duration"]
         response = client.post(self.ROUTE, data=answer_data, content_type=self.CONTENT_TYPE)
         assert testutil.match_status(HTTPStatus.ACCEPTED, response.status)
         response_body = response.get_json()
@@ -1467,6 +1475,7 @@ class TestUploadRec:
         for field in doc_required_fields:
             assert field in audio_doc
         assert audio_doc["recType"] == "answer"
+        assert audio_doc["correct"] == answer_data["correct"]
 
         user_doc = mongodb.Users.find_one({"_id": user_id})
         rec = user_doc["recordedAudios"][0]
