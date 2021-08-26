@@ -46,3 +46,14 @@ The name of each class in a testing module defines the action that the associate
 | `TestUploadRec`          | Submit a recording for pre-screening.                          |
 | `TestOwnProfile`         | Perform operations on the user's own profile.                  |
 | `TestOtherProfile`       | Perform operations on the profiles of other users.             |
+
+## The `input` Directory
+The code uses the `input` directory to run tests that require audio and/or a transcript. The following is a description of each file:
+* `transcript.txt` contains the transcript to use for pre-screening audio files.
+* `buzz.wav` and `answer.wav` are for testing submitting a `buzz` and `answer` recording respectively.
+* `test.wav` is for running tests where the contents of the file do not matter.
+* The speaker of `exact.wav` reads the transcript in `transcript.txt` aloud in an ideal environment.
+* The `bad_env.wav` file is a variant of `exact.wav` with a reverberation effect added.
+* The speaker of `mismatch.wav` reads a paragraph from [the "Lorem ipsum" Wikipedia article](https://en.wikipedia.org/wiki/Lorem_ipsum).
+
+The `segmented` directory contains the folders `exact` and `mismatch`, which are the `exact.wav` and `mismatch.wav` files, respectively, split into multiple audio files. `segmented/transcript.txt` is a variant of `transcript.txt` delimiting sentences with a newline (`\n`) character. The numbering of each audio file in these folders corresponds to each sentence to use in the transcript. `segmented/partial_mismatch` contains a mix of audio files from `exact` and audio files from `mismatch`.
