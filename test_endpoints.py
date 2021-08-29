@@ -339,9 +339,9 @@ class TestGetTranscript:
         ds = []
         for i, limit in enumerate(difficulty_limits):
             if limit is not None:
-                ds.append(limit)
+                ds.append(limit - 1)
             else:
-                ds.append(difficulty_limits[i - 1] + 1)
+                ds.append(difficulty_limits[i - 1])
         return ds
 
     @pytest.fixture(scope="session")
@@ -498,7 +498,7 @@ class TestGetTranscript:
     def test_difficulty(self, client, mongodb, questions, difficulty_limits):
         for i in range(0, self.DIFFICULTY_TRIALS):
             for j, limit in enumerate(difficulty_limits):
-                lower = difficulty_limits[j - 1] + 1 if j > 0 else None
+                lower = difficulty_limits[j - 1] if j > 0 else None
                 upper = limit
                 response = client.get(self.ROUTE, query_string={"difficultyType": j})
                 assert testutil.match_status(HTTPStatus.OK, response.status)
@@ -509,7 +509,7 @@ class TestGetTranscript:
                 if lower is not None:
                     assert lower <= question["recDifficulty"]
                 if upper is not None:
-                    assert question["recDifficulty"] <= upper
+                    assert question["recDifficulty"] < upper
 
     # Same as test_any_random, but for each difficulty
     def test_difficulty_random(self, client, questions, difficulty_limits):
@@ -565,7 +565,7 @@ class TestGetTranscript:
     def test_difficulty_batch(self, client, mongodb, questions, difficulty_limits):
         for i in range(0, self.DIFFICULTY_TRIALS):
             for j, limit in enumerate(difficulty_limits):
-                lower = difficulty_limits[j - 1] + 1 if j > 0 else None
+                lower = difficulty_limits[j - 1] if j > 0 else None
                 upper = limit
                 response = client.get(self.ROUTE, query_string={"difficultyType": j, "batchSize": self.BATCH_SIZE})
                 assert testutil.match_status(HTTPStatus.OK, response.status)
@@ -576,7 +576,7 @@ class TestGetTranscript:
                     if lower is not None:
                         assert lower <= question["recDifficulty"]
                     if upper is not None:
-                        assert question["recDifficulty"] <= upper
+                        assert question["recDifficulty"] < upper
 
     # Difficulty and batch size parameters with randomization test applied
     def test_difficulty_batch_random(self, client, questions, difficulty_limits):
