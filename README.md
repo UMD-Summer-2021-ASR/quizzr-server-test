@@ -18,6 +18,7 @@ This testing module tests the functionality of the server's endpoints in normal 
 * `TestProcessAudio`
 * `TestProcessGameResults`
 * `TestUploadRec`
+* `TestVoting`
 
 
 ### `test_error_endpoints.py`
@@ -39,13 +40,13 @@ The name of each class in a testing module defines the action that the associate
 | `TestGetRec`             | Get a recording for answering a question.                      |
 | `TestGetTranscript`      | Get a transcript for recording.                                |
 | `TestGetUnprocAudio`     | Get a batch of unprocessed audio documents.                    |
-| `TestGetUnprocAudio`     | Get a batch of unprocessed audio documents.                    |
 | `TestHLSGet`             | Get a VTT by audio ID.                                         |
+| `TestOwnProfile`         | Perform operations on the user's own profile.                  |
+| `TestOtherProfile`       | Perform operations on the profiles of other users.             |
 | `TestProcessAudio`       | Update a batch of audio documents with processing information. |
 | `TestProcessGameResults` | Send the results of a game session to the server.              |
 | `TestUploadRec`          | Submit a recording for pre-screening.                          |
-| `TestOwnProfile`         | Perform operations on the user's own profile.                  |
-| `TestOtherProfile`       | Perform operations on the profiles of other users.             |
+| `TestVoting`             | Upvote and downvote recordings.                                |
 
 ## The `input` Directory
 The code uses the `input` directory to run tests that require audio and/or a transcript. The following is a description of each file:

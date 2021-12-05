@@ -1700,3 +1700,92 @@ class TestOtherProfile:
         response = client.delete(full_route)
         assert testutil.match_status(HTTPStatus.OK, response.status)
         assert not mongodb.Users.find_one({"_id": other_profile["_id"]})
+
+
+@pytest.mark.usefixtures("client", "mongodb")
+class TestVoting:
+    UPVOTE_ROUTE = "/upvote"
+    DOWNVOTE_ROUTE = "/downvote"
+
+    @pytest.fixture
+    def user_profile(self, mongodb):
+        result = mongodb.Users.insert_one({
+            "_id": "test",
+            "recVotes": []
+        })
+        yield
+        mongodb.Users.delete_one({"_id": "test"})
+
+    @pytest.fixture
+    def audio_doc(self, mongodb):
+        mongodb.Audio.insert_one({"_id": "test_doc"})
+        yield
+        mongodb.Audio.delete_one({"_id": "test_doc"})
+
+    def test_upvote(self, client, mongodb, audio_doc, user_profile):
+        response = client.patch(f"{self.UPVOTE_ROUTE}/test_doc", json={"userId": "test"})
+        assert response.status_code == HTTPStatus.OK
+
+        audio = mongodb.Audio.find_one({"_id": "test_doc"})
+        assert audio["upvotes"] == 1
+        user = mongodb.Users.find_one({"_id": "test"})
+        assert user["recVotes"][0]["vote"] == 1
+
+    def test_downvote(self, client, mongodb, audio_doc, user_profile):
+        response = client.patch(f"{self.DOWNVOTE_ROUTE}/test_doc", json={"userId": "test"})
+        assert response.status_code == HTTPStatus.OK
+
+        audio = mongodb.Audio.find_one({"_id": "test_doc"})
+        assert audio["downvotes"] == 1
+        user = mongodb.Users.find_one({"_id": "test"})
+        assert user["recVotes"][0]["vote"] == -1
+
+    def test_upvote_twice(self, client, mongodb, audio_doc, user_profile):
+        response = client.patch(f"{self.UPVOTE_ROUTE}/test_doc", json={"userId": "test"})
+        assert response.status_code == HTTPStatus.OK
+        response = client.patch(f"{self.UPVOTE_ROUTE}/test_doc", json={"userId": "test"})
+        assert response.status_code == HTTPStatus.OK
+
+        assert response.status_code == HTTPStatus.OK
+        audio = mongodb.Audio.find_one({"_id": "test_doc"})
+        assert audio["upvotes"] == 1
+        user = mongodb.Users.find_one({"_id": "test"})
+        assert user["recVotes"][0]["vote"] == 1
+        assert len(user["recVotes"]) == 1
+
+    def test_downvote_twice(self, client, mongodb, audio_doc, user_profile):
+        response = client.patch(f"{self.DOWNVOTE_ROUTE}/test_doc", json={"userId": "test"})
+        assert response.status_code == HTTPStatus.OK
+        response = client.patch(f"{self.DOWNVOTE_ROUTE}/test_doc", json={"userId": "test"})
+        assert response.status_code == HTTPStatus.OK
+
+        audio = mongodb.Audio.find_one({"_id": "test_doc"})
+        assert audio["downvotes"] == 1
+        user = mongodb.Users.find_one({"_id": "test"})
+        assert user["recVotes"][0]["vote"] == -1
+        assert len(user["recVotes"]) == 1
+
+    def test_downvote_to_upvote(self, client, mongodb, audio_doc, user_profile):
+        response = client.patch(f"{self.DOWNVOTE_ROUTE}/test_doc", json={"userId": "test"})
+        assert response.status_code == HTTPStatus.OK
+        response = client.patch(f"{self.UPVOTE_ROUTE}/test_doc", json={"userId": "test"})
+        assert response.status_code == HTTPStatus.OK
+
+        assert response.status_code == HTTPStatus.OK
+        audio = mongodb.Audio.find_one({"_id": "test_doc"})
+        assert audio["upvotes"] == 1
+        user = mongodb.Users.find_one({"_id": "test"})
+        assert user["recVotes"][0]["vote"] == 1
+        assert len(user["recVotes"]) == 1
+
+    def test_upvote_to_downvote(self, client, mongodb, audio_doc, user_profile):
+        response = client.patch(f"{self.UPVOTE_ROUTE}/test_doc", json={"userId": "test"})
+        assert response.status_code == HTTPStatus.OK
+        response = client.patch(f"{self.DOWNVOTE_ROUTE}/test_doc", json={"userId": "test"})
+        assert response.status_code == HTTPStatus.OK
+
+        audio = mongodb.Audio.find_one({"_id": "test_doc"})
+        assert audio["downvotes"] == 1
+        user = mongodb.Users.find_one({"_id": "test"})
+        assert user["recVotes"][0]["vote"] == -1
+        assert len(user["recVotes"]) == 1
